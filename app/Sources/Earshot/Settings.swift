@@ -37,6 +37,22 @@ final class Settings: ObservableObject {
     @Published var gesturesEnabled: Bool { didSet { save("gesturesEnabled", gesturesEnabled) } }
     @Published var escapeStops: Bool { didSet { save("escapeStops", escapeStops) } }
 
+    // Notifications
+    @Published var notificationsEnabled: Bool { didSet { save("notificationsEnabled", notificationsEnabled) } }
+    @Published var notificationMode: NotificationMode { didSet { save("notificationMode", notificationMode.rawValue) } }
+    @Published var appModes: [String: NotificationMode] { didSet { saveJSON("appModes", appModes) } }
+    @Published var knownApps: [String] { didSet { save("knownApps", knownApps) } }
+    @Published var readShortInFull: Bool { didSet { save("readShortInFull", readShortInFull) } }
+    @Published var summarizeLong: Bool { didSet { save("summarizeLong", summarizeLong) } }
+    @Published var voiceReplies: Bool { didSet { save("voiceReplies", voiceReplies) } }
+    @Published var tapAnswersPrompt: Bool { didSet { save("tapAnswersPrompt", tapAnswersPrompt) } }
+    @Published var interruptReading: Bool { didSet { save("interruptReading", interruptReading) } }
+    @Published var quietHours: Bool { didSet { save("quietHours", quietHours) } }
+    @Published var quietStart: Int { didSet { save("quietStart", quietStart) } }
+    @Published var quietEnd: Int { didSet { save("quietEnd", quietEnd) } }
+
+    func mode(for app: String) -> NotificationMode { appModes[app] ?? notificationMode }
+
     struct GestureEntry: Codable { var gesture: TrackpadTap; var action: ReadAction }
 
     static let defaultShortcuts: [ReadAction: KeyCombo] = {
@@ -51,6 +67,7 @@ final class Settings: ObservableObject {
             .previousSentence: KeyCombo(keyCode: UInt32(kVK_LeftArrow), modifiers: ctrlOpt),
             .faster: KeyCombo(keyCode: UInt32(kVK_UpArrow), modifiers: ctrlOpt),
             .slower: KeyCombo(keyCode: UInt32(kVK_DownArrow), modifiers: ctrlOpt),
+            .readNotification: KeyCombo(keyCode: UInt32(kVK_ANSI_N), modifiers: ctrlOpt),
         ]
     }()
 
@@ -78,7 +95,24 @@ final class Settings: ObservableObject {
         pauseOnDisconnect = d.object(forKey: "pauseOnDisconnect") as? Bool ?? true
         gesturesEnabled = d.object(forKey: "gesturesEnabled") as? Bool ?? true
         escapeStops = d.object(forKey: "escapeStops") as? Bool ?? true
-        shortcuts = Self.loadJSON("shortcuts", from: d) ?? Self.defaultShortcuts
+        notificationsEnabled = d.object(forKey: "notificationsEnabled") as? Bool ?? true
+        notificationMode = NotificationMode(rawValue: d.string(forKey: "notificationMode") ?? "") ?? .ask
+        appModes = Self.loadJSON("appModes", from: d) ?? [:]
+        knownApps = d.stringArray(forKey: "knownApps") ?? []
+        readShortInFull = d.object(forKey: "readShortInFull") as? Bool ?? true
+        summarizeLong = d.object(forKey: "summarizeLong") as? Bool ?? true
+        voiceReplies = d.object(forKey: "voiceReplies") as? Bool ?? true
+        tapAnswersPrompt = d.object(forKey: "tapAnswersPrompt") as? Bool ?? true
+        interruptReading = d.object(forKey: "interruptReading") as? Bool ?? true
+        quietHours = d.object(forKey: "quietHours") as? Bool ?? false
+        quietStart = d.object(forKey: "quietStart") as? Int ?? 22
+        quietEnd = d.object(forKey: "quietEnd") as? Int ?? 8
+        var loaded: [ReadAction: KeyCombo] = Self.loadJSON("shortcuts", from: d) ?? Self.defaultShortcuts
+        // Shortcuts added in later versions get their defaults.
+        for (action, combo) in Self.defaultShortcuts where loaded[action] == nil && !loaded.values.contains(combo) {
+            loaded[action] = combo
+        }
+        shortcuts = loaded
         let entries: [GestureEntry]? = Self.loadJSON("gestures", from: d)
         gestures = entries.map { Dictionary($0.map { ($0.gesture, $0.action) }, uniquingKeysWith: { a, _ in a }) } ?? Self.defaultGestures
     }

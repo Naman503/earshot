@@ -80,3 +80,18 @@ final class OCRLayoutTests: XCTestCase {
         XCTAssertEqual(s.model, 1.35)
     }
 }
+
+final class NotificationTests: XCTestCase {
+    func testAppNameFromDescription() {
+        XCTAssertEqual(BannerNote.appName(description: "Script Editor, Earshot test, From Rahul, Body", title: "Earshot test"), "Script Editor")
+        XCTAssertEqual(BannerNote.appName(description: "WhatsApp, Rahul, hi", title: ""), "WhatsApp")
+    }
+
+    func testQuietHoursWrapMidnight() {
+        XCTAssertTrue(inQuietHours(23, start: 22, end: 8))
+        XCTAssertTrue(inQuietHours(3, start: 22, end: 8))
+        XCTAssertFalse(inQuietHours(12, start: 22, end: 8))
+        XCTAssertTrue(inQuietHours(13, start: 13, end: 14))
+        XCTAssertFalse(inQuietHours(5, start: 0, end: 0))
+    }
+}

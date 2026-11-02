@@ -33,6 +33,9 @@ final class Reader: ObservableObject {
     private var modelSpeed = 1.0
     private var deviceID: AudioDeviceID = 0
     private var pausedByRoute = false
+    private var onFinish: (() -> Void)?
+    /// Runs when this reading is cut short (Esc, a new tap, headphones gone).
+    private var onInterrupt: (() -> Void)?
     private let lookahead = 4
 
     init(settings: Settings, audio: AudioOutput, kokoro: KokoroEngine) {
@@ -46,38 +49,74 @@ final class Reader: ObservableObject {
 
     // MARK: Start / stop
 
-    func read(_ raw: String, source: String) {
-        stop(resumeMedia: false)
+    /// Where a reading was when something interrupted it.
+    struct Snapshot {
+        var chunks: [String]
+        var index: Int
+        var paused: Bool
+    }
+
+    /// Reads `raw` aloud. `quiet` skips the on-screen "connect headphones"
+    /// reminder (for notifications). `onFinish` runs only when it reads to the end.
+    @discardableResult
+    func read(_ raw: String, source: String, quiet: Bool = false,
+              onFinish: (() -> Void)? = nil, onInterrupt: (() -> Void)? = nil) -> Bool {
         let text = TextPrep.clean(raw, options: settings.textOptions)
         let parts = TextPrep.chunks(text)
-        guard !parts.isEmpty else { flash("Nothing to read here"); return }
-        guard let device = audio.target(settings: settings) else {
-            flash(settings.outputPolicy == .headphonesOnly ? "Connect headphones to listen" : "No allowed output device connected")
-            media.resumeOthers()
-            return
+        guard !parts.isEmpty else {
+            if !quiet { flash("Nothing to read here") }
+            return false
         }
         Log.write("read: \(parts.count) chunks from \(source), \(text.count) chars")
+        let started = start(parts, at: 0, quiet: quiet, onFinish: onFinish)
+        if started { self.onInterrupt = onInterrupt }
+        return started
+    }
+
+    /// Captures the current reading so it can be resumed after an interruption.
+    func snapshot() -> Snapshot? {
+        guard isActive, !chunks.isEmpty else { return nil }
+        return Snapshot(chunks: chunks, index: index, paused: state == .paused)
+    }
+
+    func restore(_ s: Snapshot) {
+        guard start(s.chunks, at: s.index, quiet: true, onFinish: nil) else { return }
+        if s.paused { togglePause() }
+    }
+
+    @discardableResult
+    private func start(_ parts: [String], at startIndex: Int, quiet: Bool, onFinish: (() -> Void)?) -> Bool {
+        stop(resumeMedia: false)
+        guard let device = audio.target(settings: settings) else {
+            if !quiet {
+                flash(settings.outputPolicy == .headphonesOnly ? "Connect headphones to listen" : "No allowed output device connected")
+            }
+            media.resumeOthers()
+            return false
+        }
 
         if settings.mediaPolicy == .pauseAndResume, !media.hasPaused { media.pauseOthers() }
         do {
             try audio.prepare(device: device)
         } catch {
             flash("Couldn't start audio: \(error.localizedDescription)")
-            return
+            return false
         }
         deviceID = device.id
         readID += 1
         chunks = parts
         total = parts.count
-        index = 0
-        position = 0
-        currentText = parts[0]
+        index = min(startIndex, parts.count - 1)
+        position = index
+        currentText = parts[index]
+        self.onFinish = onFinish
         let useKokoro = settings.engine == .kokoro && kokoro.status == .ready
         modelSpeed = useKokoro ? speedSplit(settings.speed).model : 1
         applyAudioSettings()
         audio.player.play()
         setState(.preparing)
         fill()
+        return true
     }
 
     func stop(resumeMedia: Bool = true) {
@@ -91,9 +130,13 @@ final class Reader: ObservableObject {
         requested = []
         scheduled = []
         pausedByRoute = false
+        onFinish = nil
+        let interrupted = onInterrupt
+        onInterrupt = nil
         total = 0
         if resumeMedia { media.resumeOthers() }
         setState(.idle)
+        interrupted?()
     }
 
     func togglePause() {
@@ -127,6 +170,13 @@ final class Reader: ObservableObject {
 
     func applyAudioSettings() {
         audio.apply(speedStretch: settings.speed / modelSpeed, volume: settings.volume)
+    }
+
+    private func finishNaturally() {
+        let done = onFinish
+        onInterrupt = nil
+        stop(resumeMedia: done == nil)
+        done?()
     }
 
     // MARK: Pipeline
@@ -180,7 +230,7 @@ final class Reader: ObservableObject {
             next += 1
         }
         if index >= chunks.count, scheduled.isEmpty, !chunks.isEmpty {
-            stop()
+            finishNaturally()
             return
         }
         if state == .preparing, !scheduled.isEmpty { setState(.speaking) }
@@ -193,7 +243,7 @@ final class Reader: ObservableObject {
         cache[i] = nil
         index = i + 1
         if index >= chunks.count {
-            stop()
+            finishNaturally()
             return
         }
         if let next = scheduled.first { show(next) } else if state == .speaking { setState(.preparing) }
@@ -259,6 +309,16 @@ final class Reader: ObservableObject {
         state = s
         onStateChange?(s)
     }
+
+    /// A notice that stays until `clearNotice` (e.g. "Read it? Say yes or no").
+    func hold(_ message: String) {
+        notice = message
+    }
+
+    func clearNotice() { notice = nil }
+
+    /// Resumes media paused for a chain of readings (announcement → answer → body).
+    func resumeMedia() { media.resumeOthers() }
 
     func flash(_ message: String) {
         notice = message

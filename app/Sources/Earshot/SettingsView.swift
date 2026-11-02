@@ -4,7 +4,7 @@ import ServiceManagement
 import SwiftUI
 
 enum SettingsTab: String, CaseIterable {
-    case voice, output, media, shortcuts, gestures, reading, general
+    case voice, notifications, output, media, shortcuts, gestures, reading, general
 }
 
 struct SettingsView: View {
@@ -13,6 +13,7 @@ struct SettingsView: View {
     var body: some View {
         TabView(selection: $initialTab) {
             VoiceTab().tabItem { Label("Voice", systemImage: "waveform") }.tag(SettingsTab.voice)
+            NotificationsTab().tabItem { Label("Notifications", systemImage: "bell.badge") }.tag(SettingsTab.notifications)
             OutputTab().tabItem { Label("Output", systemImage: "headphones") }.tag(SettingsTab.output)
             MediaTab().tabItem { Label("Media", systemImage: "play.rectangle") }.tag(SettingsTab.media)
             ShortcutsTab().tabItem { Label("Shortcuts", systemImage: "keyboard") }.tag(SettingsTab.shortcuts)
@@ -21,7 +22,7 @@ struct SettingsView: View {
             GeneralTab().tabItem { Label("General", systemImage: "gearshape") }.tag(SettingsTab.general)
         }
         .padding(20)
-        .frame(width: 640, height: 520)
+        .frame(width: 700, height: 560)
     }
 }
 
@@ -102,6 +103,90 @@ private struct VoiceTab: View {
         let name = id.split(separator: "_").dropFirst().joined(separator: " ").capitalized
         return id == "af_heart" ? "\(name) (default)" : name
     }
+}
+
+// MARK: Notifications
+
+private struct NotificationsTab: View {
+    @EnvironmentObject var settings: Settings
+    @EnvironmentObject var announcer: Announcer
+    @State private var voiceAuthorized = VoiceReply.authorized
+
+    var body: some View {
+        Form {
+            Toggle("Announce notifications", isOn: $settings.notificationsEnabled)
+            Group {
+                Picker("Usually", selection: $settings.notificationMode) {
+                    ForEach(NotificationMode.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                Toggle("Read short messages in full without asking", isOn: $settings.readShortInFull)
+                Toggle("Summarize long messages first", isOn: $settings.summarizeLong)
+                    .disabled(!Summarizer.available)
+                if !Summarizer.available {
+                    Text("Summaries use Apple Intelligence's on-device model, which isn't available on this Mac right now.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Toggle("Pause what I'm listening to for a notification, then continue", isOn: $settings.interruptReading)
+
+                Section("Answering \"Read it?\"") {
+                    HStack {
+                        Toggle("Answer by voice (yes / no)", isOn: $settings.voiceReplies)
+                        Spacer()
+                        if settings.voiceReplies && !voiceAuthorized {
+                            Button("Allow microphone…") {
+                                Task { voiceAuthorized = await VoiceReply.requestPermissions() }
+                            }
+                        }
+                    }
+                    Text("Listens for 6 seconds with on-device recognition, using the Mac's own microphone so your earbuds keep full sound quality.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Toggle("A four-finger tap means yes", isOn: $settings.tapAnswersPrompt)
+                    LabeledContent("Shortcut") {
+                        Text(settings.shortcuts[.readNotification].map(HotKeys.describe) ?? "None").foregroundStyle(.secondary)
+                    }
+                }
+
+                Section("Quiet hours") {
+                    Toggle("Stay silent at night", isOn: $settings.quietHours)
+                    HStack {
+                        Picker("From", selection: $settings.quietStart) { ForEach(0..<24, id: \.self) { Text(Self.hour($0)).tag($0) } }
+                        Picker("to", selection: $settings.quietEnd) { ForEach(0..<24, id: \.self) { Text(Self.hour($0)).tag($0) } }
+                    }
+                    .disabled(!settings.quietHours)
+                }
+
+                Section("Per app") {
+                    if settings.knownApps.isEmpty {
+                        Text("Apps show up here after their first notification.").foregroundStyle(.secondary)
+                    }
+                    ForEach(settings.knownApps.sorted(), id: \.self) { app in
+                        Picker(app, selection: Binding(
+                            get: { settings.appModes[app].map { ModeChoice.mode($0) } ?? .usual },
+                            set: { settings.appModes[app] = $0.mode })) {
+                            Text("Usual").tag(ModeChoice.usual)
+                            ForEach(NotificationMode.allCases, id: \.self) { Text($0.title).tag(ModeChoice.mode($0)) }
+                        }
+                    }
+                }
+                Button("Send a test notification") {
+                    let p = Process()
+                    p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+                    p.arguments = ["-e", "display notification \"Hey, the vendor meeting moved to 4 pm tomorrow because their team is travelling. Please bring the updated price sheet and the signed contract copy, and confirm on the group once you've seen this.\" with title \"Rahul\" subtitle \"Vendor meeting\""]
+                    try? p.run()
+                }
+            }
+            .disabled(!settings.notificationsEnabled)
+        }
+        .formStyle(.grouped)
+        .onAppear { voiceAuthorized = VoiceReply.authorized }
+    }
+
+    enum ModeChoice: Hashable {
+        case usual, mode(NotificationMode)
+        var mode: NotificationMode? { if case .mode(let m) = self { m } else { nil } }
+    }
+
+    static func hour(_ h: Int) -> String { h == 0 ? "12 am" : h < 12 ? "\(h) am" : h == 12 ? "12 pm" : "\(h - 12) pm" }
 }
 
 // MARK: Output

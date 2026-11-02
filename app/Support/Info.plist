@@ -22,6 +22,10 @@
 	<string>15.0</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Earshot listens for a few seconds after asking "Read it?" so you can answer yes or no by voice.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Earshot recognizes "yes" and "no" on this Mac when you answer a notification prompt.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 </dict>

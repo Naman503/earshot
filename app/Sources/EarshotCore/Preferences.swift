@@ -4,6 +4,7 @@ import Foundation
 public enum ReadAction: String, CaseIterable, Codable, Sendable, Identifiable {
     case smartRead, paragraph, sentence, fromHere, selection, window
     case pauseResume, stop, nextSentence, previousSentence, faster, slower
+    case readNotification
     case none
 
     public var id: String { rawValue }
@@ -22,6 +23,7 @@ public enum ReadAction: String, CaseIterable, Codable, Sendable, Identifiable {
         case .previousSentence: "Back one sentence"
         case .faster: "Speed up"
         case .slower: "Slow down"
+        case .readNotification: "Read the latest notification (or answer yes)"
         case .none: "Nothing"
         }
     }
@@ -75,4 +77,48 @@ public enum EngineChoice: String, CaseIterable, Codable, Sendable {
 public func speedSplit(_ speed: Double, modelCap: Double = 1.35) -> (model: Double, stretch: Double) {
     let model = min(max(speed, 0.7), modelCap)
     return (model, speed / model)
+}
+
+/// How a notification is spoken.
+public enum NotificationMode: String, CaseIterable, Codable, Sendable {
+    case ask, full, brief, mute
+
+    public var title: String {
+        switch self {
+        case .ask: "Say who it's from, ask before reading"
+        case .full: "Read it in full"
+        case .brief: "Just say who it's from"
+        case .mute: "Stay silent"
+        }
+    }
+}
+
+/// A notification banner as read from Notification Center.
+public struct BannerNote: Equatable, Sendable {
+    public var id: String
+    public var app: String
+    public var title: String
+    public var subtitle: String
+    public var body: String
+
+    public init(id: String, app: String, title: String, subtitle: String, body: String) {
+        self.id = id; self.app = app; self.title = title; self.subtitle = subtitle; self.body = body
+    }
+
+    /// Banner accessibility descriptions read "App, Title, Subtitle, Body"; the
+    /// app is whatever comes before the title.
+    public static func appName(description: String, title: String) -> String {
+        if !title.isEmpty, let r = description.range(of: ", " + title) {
+            return String(description[..<r.lowerBound])
+        }
+        return description.components(separatedBy: ", ").first ?? description
+    }
+
+    /// "Rahul" style sender line: the title, plus the subtitle when there is one.
+    public var who: String { subtitle.isEmpty ? title : "\(title), \(subtitle)" }
+}
+
+/// True when `hour` (0–23) falls in a quiet window that may wrap midnight.
+public func inQuietHours(_ hour: Int, start: Int, end: Int) -> Bool {
+    start == end ? false : start < end ? (hour >= start && hour < end) : (hour >= start || hour < end)
 }

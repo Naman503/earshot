@@ -14,6 +14,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let hotKeys = HotKeys()
     let trackpad = Trackpad()
     private(set) var reader: Reader!
+    private(set) var announcer: Announcer!
+    let notifications = NotificationWatcher()
     private var hud: HUD!
     private var statusItem: NSStatusItem!
     private var settingsWindow: NSWindow?
@@ -23,6 +25,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Self.shared = self
         reader = Reader(settings: settings, audio: audio, kokoro: kokoro)
         hud = HUD(reader: reader, settings: settings)
+        announcer = Announcer(settings: settings, reader: reader)
+        notifications.onBanner = { [weak self] in self?.announcer.handle($0) }
         Log.write("launch \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") ?? "") accessibility=\(AXIsProcessTrusted())")
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -36,6 +40,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         trackpad.onGesture = { [weak self] g in
             guard let self, self.settings.gesturesEnabled, let action = self.settings.gestures[g], action != .none else { return }
             Log.write("gesture: \(g.label) → \(action.rawValue)")
+            // While a notification asks "Read it?", a reading tap means yes.
+            if self.announcer.pending != nil, self.settings.tapAnswersPrompt,
+               [.paragraph, .smartRead, .readNotification].contains(action) {
+                self.announcer.readLatestOrAnswer()
+                return
+            }
             self.perform(action)
         }
 
@@ -73,6 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             MainActor.assumeIsolated { _ = self?.grabber.enableWebAccessibility(pid: app.processIdentifier) }
         }
 
+        notifications.start()
         handleDebugArguments()
         if !AXIsProcessTrusted() { openSettings(tab: .general) }
     }
@@ -100,7 +111,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .selection:
             if let sel = grabber.selection() { start(sel) } else { reader.flash("Nothing selected") }
         case .pauseResume: reader.togglePause()
-        case .stop: reader.stop()
+        case .stop: if !announcer.dismissPending() { reader.stop() }
+        case .readNotification: announcer.readLatestOrAnswer()
         case .nextSentence: reader.skip(1)
         case .previousSentence: reader.skip(-1)
         case .faster: reader.changeSpeed(by: 0.1)
@@ -153,6 +165,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             add(menu, reader.state == .paused ? "Resume" : "Pause", .pauseResume)
             add(menu, "Stop", .stop)
         }
+        if !announcer.history.isEmpty {
+            let recent = NSMenuItem(title: "Recent notifications", action: nil, keyEquivalent: "")
+            let sub = NSMenu()
+            for note in announcer.history.prefix(10) {
+                let item = NSMenuItem(title: "\(note.app): \(note.who)", action: #selector(readNote(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = note.id
+                sub.addItem(item)
+            }
+            recent.submenu = sub
+            menu.addItem(recent)
+        }
         menu.addItem(.separator())
         let speed = NSMenuItem(title: String(format: "Speed: %.2g×", settings.speed), action: nil, keyEquivalent: "")
         let speeds = NSMenu()
@@ -191,6 +215,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { self.perform(action) }
     }
 
+    @objc private func readNote(_ item: NSMenuItem) {
+        guard let id = item.representedObject as? String,
+              let note = announcer.history.first(where: { $0.id == id }) else { return }
+        reader.read("\(note.app). \(note.who). \(note.body)", source: "notification history")
+    }
+
     @objc private func setSpeed(_ item: NSMenuItem) {
         if let s = item.representedObject as? Double { settings.speed = s }
     }
@@ -199,7 +229,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func openSettings(tab: SettingsTab) {
         if settingsWindow == nil {
-            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 520),
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 560),
                              styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
             w.title = "Earshot Settings"
             w.isReleasedWhenClosed = false
@@ -207,7 +237,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             settingsWindow = w
         }
         settingsWindow?.contentView = NSHostingView(rootView: SettingsView(initialTab: tab)
-            .environmentObject(settings).environmentObject(kokoro).environmentObject(audio).environmentObject(reader))
+            .environmentObject(settings).environmentObject(kokoro).environmentObject(audio).environmentObject(reader)
+            .environmentObject(announcer))
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
     }
@@ -220,6 +251,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let parts = arg.split(separator: "=", maxSplits: 1).map(String.init)
             let value = parts.count > 1 ? parts[1] : ""
             switch parts[0] {
+            case "--dump-nc":
+                // Dumps Notification Center's accessibility tree a few times (banner research).
+                for delay in [1.5, 3.0] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                        guard let nc = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.notificationcenterui").first else {
+                            Log.write("dump-nc: not running"); return
+                        }
+                        Log.write("dump-nc t=\(delay):\n" + AXDump.tree(AXUIElementCreateApplication(nc.processIdentifier)))
+                    }
+                }
             case "--settings":
                 openSettings(tab: SettingsTab(rawValue: value) ?? .voice)
             case "--say":
@@ -228,9 +269,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let unit: GrabUnit = parts[0] == "--probe" ? GrabUnit(rawValue: value) ?? .paragraph : .paragraph
                 DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
                     let p = parts[0] == "--probe-app" ? self.grabber.samplePoint(inApp: value) ?? .zero : TextGrabber.pointer
+                    let grabber = self.grabber
                     Task.detached {
-                        Log.write("probe diagnose: \(self.grabber.diagnose(at: p))")
-                        let g = await self.grabber.grab(unit, at: p)
+                        Log.write("probe diagnose: \(grabber.diagnose(at: p))")
+                        let g = await grabber.grab(unit, at: p)
                         Log.write("probe \(unit.rawValue) at \(p): source=\(g?.source ?? "nil") frame=\(String(describing: g?.frame))\n---\n\(g?.text.prefix(1500) ?? "")\n---")
                     }
                 }
