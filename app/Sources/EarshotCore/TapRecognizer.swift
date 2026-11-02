@@ -15,7 +15,7 @@ public struct TrackpadTap: Hashable, Codable, Sendable, Comparable {
         return "\(count) with \(fingers) fingers"
     }
 
-    public static let all: [TrackpadTap] = (3...5).flatMap { f in (1...2).map { TrackpadTap(fingers: f, taps: $0) } }
+    public static let all: [TrackpadTap] = (3...5).flatMap { f in (1...3).map { TrackpadTap(fingers: f, taps: $0) } }
 }
 
 /// Recognizes multi-finger taps from raw trackpad frames. Pure state machine:
@@ -32,9 +32,9 @@ public struct TapRecognizer {
     public var maxTapDuration = 0.35
     public var maxMovement = 0.04
     public var multiTapWindow = 0.30
-    /// Finger counts that have a multi-tap binding. Single taps for these wait
-    /// `multiTapWindow` to see whether a second tap follows.
-    public var multiTapFingers: Set<Int> = []
+    /// Highest bound tap count per finger count. A tap that could still become
+    /// a longer bound sequence waits `multiTapWindow` for the next tap.
+    public var maxTaps: [Int: Int] = [:]
 
     private var touchStart: Double?
     private var maxFingers = 0
@@ -77,7 +77,7 @@ public struct TapRecognizer {
             if let p = pending { out.append(TrackpadTap(fingers: p.fingers, taps: p.taps)) }
             pending = (maxFingers, 1, frame.time)
         }
-        if let p = pending, !multiTapFingers.contains(p.fingers) || p.taps >= 2 {
+        if let p = pending, p.taps >= (maxTaps[p.fingers] ?? 1) {
             out.append(TrackpadTap(fingers: p.fingers, taps: p.taps))
             pending = nil
         }

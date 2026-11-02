@@ -263,6 +263,26 @@ final class TextGrabber {
         return lines.joined(separator: "\n")
     }
 
+    /// Whole text of the web page in the named app's front window (for --summarize-app).
+    func pageText(inApp name: String) -> String? {
+        guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.localizedName == name }) else { return nil }
+        enableWebAccessibility(pid: app.processIdentifier)
+        let root = AXUIElementCreateApplication(app.processIdentifier)
+        guard let win = attrElement(root, kAXFocusedWindowAttribute) ?? (attr(root, kAXWindowsAttribute) as? [AXUIElement])?.first else { return nil }
+        var queue = [win]
+        var visited = 0
+        while !queue.isEmpty, visited < 3000 {
+            let el = queue.removeFirst()
+            visited += 1
+            if role(el) == "AXWebArea", let start = attr(el, "AXStartTextMarker"), let end = attr(el, "AXEndTextMarker") {
+                let range = AXTextMarkerRangeCreate(nil, start as! AXTextMarker, end as! AXTextMarker)
+                return paramString(el, "AXStringForTextMarkerRange", range)
+            }
+            queue.append(contentsOf: children(el))
+        }
+        return nil
+    }
+
     /// Center of a long static text in the named app's front window (for --probe-app).
     func samplePoint(inApp name: String) -> CGPoint? {
         guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.localizedName == name }) else { return nil }

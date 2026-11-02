@@ -15,6 +15,27 @@ final class TextPrepTests: XCTestCase {
         XCTAssertEqual(chunks.last, "Short one.")
     }
 
+    func testMainContentSkipsMenus() {
+        let para = String(repeating: "Real article text goes here. ", count: 5)
+        let page = "Home\nNews\nSign in\nThe Big Headline Today\nBy A. Writer, 2 Nov\n\(para)\nMore"
+        XCTAssertEqual(TextPrep.mainContent(page), "The Big Headline Today\nBy A. Writer, 2 Nov\n\(para)\nMore")
+        XCTAssertEqual(TextPrep.mainContent("short\nlines"), "short\nlines")
+    }
+
+    func testObjectReplacementBreaksLinesAndPreambleIsDropped() {
+        XCTAssertEqual(TextPrep.clean("Home\u{FFFC}News\u{FFFC}\u{FFFC}Story"), "Home\nNews\nStory")
+        XCTAssertEqual(TextPrep.dropPreamble("Here is a summary of the page:\n\nThe PR was merged."), "The PR was merged.")
+        XCTAssertEqual(TextPrep.dropPreamble("Here’s a brief summary: Rain tomorrow."), "Rain tomorrow.")
+        XCTAssertEqual(TextPrep.dropPreamble("The vote passed."), "The vote passed.")
+    }
+
+    func testSectionsRespectSize() {
+        let text = (1...10).map { "Paragraph \($0) " + String(repeating: "x", count: 40) }.joined(separator: "\n")
+        let parts = TextPrep.sections(text, size: 120)
+        XCTAssertTrue(parts.allSatisfy { $0.count <= 120 })
+        XCTAssertEqual(parts.joined(separator: "\n"), text)
+    }
+
     func testSentenceAndParagraphUnits() {
         let text = "First one. Second one here.\nOther paragraph."
         XCTAssertEqual(TextUnits.substring(.sentence, in: text, at: 14), "Second one here.")
@@ -38,6 +59,20 @@ final class TapRecognizerTests: XCTestCase {
         XCTAssertEqual(out, [TrackpadTap(fingers: 4, taps: 1)])
     }
 
+    func testTripleTap() {
+        var r = TapRecognizer()
+        r.maxTaps = [4: 3]
+        var out: [TrackpadTap] = []
+        for i in 0..<3 {
+            let t = Double(i) * 0.2
+            out += r.feed(touch(4, at: t)) + r.feed(touch(0, at: t + 0.08))
+        }
+        XCTAssertEqual(out, [TrackpadTap(fingers: 4, taps: 3)])
+        out = r.feed(touch(4, at: 2)) + r.feed(touch(0, at: 2.08)) + r.feed(touch(4, at: 2.2)) + r.feed(touch(0, at: 2.28))
+        out += r.tick(now: 2.7)
+        XCTAssertEqual(out, [TrackpadTap(fingers: 4, taps: 2)])
+    }
+
     func testSwipeIsNotATap() {
         var r = TapRecognizer()
         var out = r.feed(touch(4, at: 0))
@@ -48,7 +83,7 @@ final class TapRecognizerTests: XCTestCase {
 
     func testDoubleTapWaitsForSecondTap() {
         var r = TapRecognizer()
-        r.multiTapFingers = [4]
+        r.maxTaps = [4: 2]
         var out = r.feed(touch(4, at: 0)) + r.feed(touch(0, at: 0.1))
         XCTAssertTrue(out.isEmpty)
         out += r.feed(touch(4, at: 0.25)) + r.feed(touch(0, at: 0.32))

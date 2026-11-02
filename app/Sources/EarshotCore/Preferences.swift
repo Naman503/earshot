@@ -4,7 +4,7 @@ import Foundation
 public enum ReadAction: String, CaseIterable, Codable, Sendable, Identifiable {
     case smartRead, paragraph, sentence, fromHere, selection, window
     case pauseResume, stop, nextSentence, previousSentence, faster, slower
-    case readNotification
+    case readNotification, summarize
     case none
 
     public var id: String { rawValue }
@@ -24,6 +24,7 @@ public enum ReadAction: String, CaseIterable, Codable, Sendable, Identifiable {
         case .faster: "Speed up"
         case .slower: "Slow down"
         case .readNotification: "Read the latest notification (or answer yes)"
+        case .summarize: "Summarize the page (or selection), then offer to read it"
         case .none: "Nothing"
         }
     }

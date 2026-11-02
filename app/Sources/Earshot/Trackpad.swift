@@ -28,8 +28,8 @@ final class Trackpad {
     nonisolated(unsafe) private static var recognizer = TapRecognizer()
     private var ticker: Timer?
 
-    func start(multiTapFingers: Set<Int>) {
-        Self.lock.withLock { Self.recognizer.multiTapFingers = multiTapFingers }
+    func start(maxTaps: [Int: Int]) {
+        Self.lock.withLock { Self.recognizer.maxTaps = maxTaps }
         guard devices.isEmpty else { return }
         guard let lib = dlopen("/System/Library/PrivateFrameworks/MultitouchSupport.framework/MultitouchSupport", RTLD_NOW),
               let create = dlsym(lib, "MTDeviceCreateList"),
@@ -76,9 +76,9 @@ final class Trackpad {
     }
 
     /// Re-attach after sleep or when a Magic Trackpad connects.
-    func restart(multiTapFingers: Set<Int>) {
+    func restart(maxTaps: [Int: Int]) {
         stop()
-        start(multiTapFingers: multiTapFingers)
+        start(maxTaps: maxTaps)
     }
 
     nonisolated private static let debug = UserDefaults.standard.bool(forKey: "touchDebug")

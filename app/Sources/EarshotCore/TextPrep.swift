@@ -13,7 +13,9 @@ public enum TextPrep {
     /// Removes things that sound bad read aloud and normalizes whitespace,
     /// keeping paragraph breaks.
     public static func clean(_ text: String, options: Options = Options()) -> String {
-        var s = text
+        // Web pages mark embedded objects (links, images, buttons) with U+FFFC;
+        // treat them as breaks so menus don't run into the article.
+        var s = text.replacingOccurrences(of: "\u{FFFC}", with: "\n")
         if options.skipURLs {
             s = s.replacingOccurrences(of: #"https?://\S+|www\.\S+"#, with: " ", options: .regularExpression)
         }
@@ -69,6 +71,46 @@ public enum TextPrep {
         }
         if !rest.isEmpty { pieces.append(String(rest)) }
         return pieces.filter { !$0.isEmpty }
+    }
+}
+
+extension TextPrep {
+    /// Drops site chrome (menus, links, buttons) above the first real paragraph,
+    /// keeping up to two short lines right before it (a headline, a byline).
+    public static func mainContent(_ text: String, minParagraph: Int = 100) -> String {
+        let lines = text.components(separatedBy: "\n")
+        guard let first = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces).count >= minParagraph }) else { return text }
+        var start = first
+        while start > 0, first - start < 2 {
+            let prev = lines[start - 1].trimmingCharacters(in: .whitespaces)
+            guard prev.count >= 12, prev.count < minParagraph else { break }
+            start -= 1
+        }
+        return lines[start...].joined(separator: "\n")
+    }
+
+    /// Strips the "Here is a summary of the page:" style openers models add.
+    public static func dropPreamble(_ text: String) -> String {
+        text.replacingOccurrences(of: #"^\s*(here(’|')?s|here is|this is)\s+(a|the|your)\s+(short\s+|brief\s+|quick\s+)?summary[^:\n]*:\s*"#,
+                                  with: "", options: [.regularExpression, .caseInsensitive])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Splits text at paragraph breaks into sections of at most `size` characters.
+    public static func sections(_ text: String, size: Int) -> [String] {
+        var out: [String] = []
+        var current = ""
+        for para in text.components(separatedBy: "\n") where !para.isEmpty {
+            for piece in para.count > size ? split(para, limit: size) : [para] {
+                if current.count + piece.count + 1 > size, !current.isEmpty {
+                    out.append(current)
+                    current = ""
+                }
+                current += current.isEmpty ? piece : "\n" + piece
+            }
+        }
+        if !current.isEmpty { out.append(current) }
+        return out
     }
 }
 

@@ -41,7 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self, self.settings.gesturesEnabled, let action = self.settings.gestures[g], action != .none else { return }
             Log.write("gesture: \(g.label) → \(action.rawValue)")
             // While a notification asks "Read it?", a reading tap means yes.
-            if self.announcer.pending != nil, self.settings.tapAnswersPrompt,
+            if self.announcer.isAsking, self.settings.tapAnswersPrompt,
                [.paragraph, .smartRead, .readNotification].contains(action) {
                 self.announcer.readLatestOrAnswer()
                 return
@@ -53,7 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settings.$gestures.combineLatest(settings.$gesturesEnabled).sink { [weak self] gestures, enabled in
             guard let self else { return }
             if enabled {
-                self.trackpad.start(multiTapFingers: Set(gestures.filter { $0.key.taps > 1 && $0.value != .none }.map(\.key.fingers)))
+                self.trackpad.start(maxTaps: Self.maxTaps(gestures))
             } else {
                 self.trackpad.stop()
             }
@@ -95,7 +95,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func restartTrackpad() {
         guard settings.gesturesEnabled else { return }
-        trackpad.restart(multiTapFingers: Set(settings.gestures.filter { $0.key.taps > 1 }.map(\.key.fingers)))
+        trackpad.restart(maxTaps: Self.maxTaps(settings.gestures))
+    }
+
+    private static func maxTaps(_ gestures: [TrackpadTap: ReadAction]) -> [Int: Int] {
+        gestures.filter { $0.value != .none }.keys.reduce(into: [:]) { $0[$1.fingers] = max($0[$1.fingers] ?? 1, $1.taps) }
     }
 
     // MARK: Actions
@@ -113,6 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .pauseResume: reader.togglePause()
         case .stop: if !announcer.dismissPending() { reader.stop() }
         case .readNotification: announcer.readLatestOrAnswer()
+        case .summarize: summarize()
         case .nextSentence: reader.skip(1)
         case .previousSentence: reader.skip(-1)
         case .faster: reader.changeSpeed(by: 0.1)
@@ -137,6 +142,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 Log.write("grab \(unit.rawValue) in \(app): \(grab?.source ?? "nothing") in \(Int(Date().timeIntervalSince(started) * 1000)) ms: \(grab?.text.prefix(80) ?? "")")
                 if let grab { self.start(grab) } else { self.reader.flash("Couldn't find text under the pointer") }
             }
+        }
+    }
+
+    /// Summary of the selection or the page under the pointer, then "Read the whole page?".
+    private func summarize() {
+        guard AXIsProcessTrusted() else { reader.flash("Earshot needs Accessibility permission"); return }
+        guard Summarizer.available else {
+            reader.flash("Summaries need Apple Intelligence — reading the page instead")
+            grabAndRead(.fromHere)
+            return
+        }
+        let point = TextGrabber.pointer
+        let grabber = self.grabber
+        let selection = grabber.selection()
+        reader.stop()
+        reader.hold("Summarizing…")
+        Task {
+            let grab: Grab?
+            if let selection { grab = selection } else { grab = await Task.detached { await grabber.grab(.window, at: point) }.value }
+            guard let grab else { reader.clearNotice(); reader.flash("Couldn't find text to summarize"); return }
+            let cleaned = TextPrep.clean(grab.text, options: settings.textOptions)
+            let text = selection == nil ? TextPrep.mainContent(cleaned) : cleaned
+            Log.write("summarize: \(text.count) chars from \(grab.source)")
+            guard text.count > 500 else {
+                reader.clearNotice()
+                reader.read(text, source: "short page")
+                return
+            }
+            let started = Date()
+            let summary = await Summarizer.summarizePage(text) { [weak self] done, total in
+                Task { @MainActor in self?.reader.hold(total > 1 ? "Summarizing… part \(min(done + 1, total)) of \(total)" : "Summarizing…") }
+            }
+            reader.clearNotice()
+            Log.write("summarize: \(summary?.count ?? 0) chars in \(Int(Date().timeIntervalSince(started) * 1000)) ms")
+            guard let summary else {
+                reader.flash("Couldn't summarize this — reading it instead")
+                reader.read(text, source: "page")
+                return
+            }
+            reader.read("Here's the gist. " + summary, source: "summary", onFinish: { [weak self] in
+                guard let self else { return }
+                self.announcer.askYesNo(selection == nil ? "Read the whole page?" : "Read all of it?") { yes in
+                    if yes { self.reader.read(text, source: "page after summary") } else { self.reader.resumeMedia() }
+                }
+            })
         }
     }
 
@@ -259,6 +309,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                             Log.write("dump-nc: not running"); return
                         }
                         Log.write("dump-nc t=\(delay):\n" + AXDump.tree(AXUIElementCreateApplication(nc.processIdentifier)))
+                    }
+                }
+            case "--summarize-app":
+                // Summarizes the named app's front page into the log, silently.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    guard let raw = self.grabber.pageText(inApp: value) else { Log.write("summarize-app: no page text"); return }
+                    let text = TextPrep.mainContent(TextPrep.clean(raw, options: self.settings.textOptions))
+                    Log.write("summarize-app: \(raw.count) chars raw, \(text.count) after cleanup; starts \"\(text.prefix(60))\"")
+                    let t0 = Date()
+                    Task {
+                        let s = await Summarizer.summarizePage(text) { d, n in Log.write("summarize-app: part \(d)/\(n)") }
+                        Log.write("summarize-app: \(Int(Date().timeIntervalSince(t0) * 1000)) ms →\n\(s ?? "nil")")
                     }
                 }
             case "--settings":

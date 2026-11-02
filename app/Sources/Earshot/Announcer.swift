@@ -8,6 +8,8 @@ final class Announcer: ObservableObject {
     @Published private(set) var history: [BannerNote] = []
     /// The notification waiting for a yes / no.
     @Published private(set) var pending: BannerNote?
+    /// Any question waiting for a yes / no (notification or page summary).
+    @Published private(set) var isAsking = false
 
     private let settings: Settings
     private let reader: Reader
@@ -92,20 +94,31 @@ final class Announcer: ObservableObject {
 
     private func ask(_ note: BannerNote) {
         pending = note
-        let listening = settings.voiceReplies && VoiceReply.authorized
-        reader.hold(listening ? "Read it? Say yes or no" : "Read it? Press \(shortcutHint) or tap with 4 fingers")
-        var settled = false
-        let settle: (Bool) -> Void = { [weak self] yes in
-            guard let self, !settled else { return }
-            settled = true
-            self.answer = nil
+        askYesNo("Read it?") { [weak self] yes in
+            guard let self else { return }
             self.pending = nil
-            self.reader.clearNotice()
             if yes {
                 Task { await self.readBody(note, intro: nil) }
             } else {
                 self.done()
             }
+        }
+    }
+
+    /// Waits for yes / no — by voice, a four-finger tap or the shortcut — after
+    /// a spoken question. No answer counts as no.
+    func askYesNo(_ question: String, then: @escaping (Bool) -> Void) {
+        let listening = settings.voiceReplies && VoiceReply.authorized
+        reader.hold(listening ? "\(question) Say yes or no" : "\(question) Press \(shortcutHint) or tap with 4 fingers")
+        isAsking = true
+        var settled = false
+        let settle: (Bool) -> Void = { [weak self] yes in
+            guard let self, !settled else { return }
+            settled = true
+            self.answer = nil
+            self.isAsking = false
+            self.reader.clearNotice()
+            then(yes)
         }
         answer = settle
         if listening {
@@ -152,6 +165,7 @@ final class Announcer: ObservableObject {
         busy = false
         answer = nil
         pending = nil
+        isAsking = false
         reader.clearNotice()
         DispatchQueue.main.async { [weak self] in self?.drain() }
     }

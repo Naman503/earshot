@@ -70,12 +70,14 @@ final class Settings: ObservableObject {
             .faster: KeyCombo(keyCode: UInt32(kVK_UpArrow), modifiers: ctrlOpt),
             .slower: KeyCombo(keyCode: UInt32(kVK_DownArrow), modifiers: ctrlOpt),
             .readNotification: KeyCombo(keyCode: UInt32(kVK_ANSI_N), modifiers: ctrlOpt),
+            .summarize: KeyCombo(keyCode: UInt32(kVK_ANSI_G), modifiers: ctrlOpt),
         ]
     }()
 
     static let defaultGestures: [TrackpadTap: ReadAction] = [
         TrackpadTap(fingers: 4, taps: 1): .paragraph,
         TrackpadTap(fingers: 4, taps: 2): .fromHere,
+        TrackpadTap(fingers: 4, taps: 3): .summarize,
         TrackpadTap(fingers: 3, taps: 2): .pauseResume,
         TrackpadTap(fingers: 5, taps: 1): .stop,
     ]
@@ -117,7 +119,10 @@ final class Settings: ObservableObject {
         }
         shortcuts = loaded
         let entries: [GestureEntry]? = Self.loadJSON("gestures", from: d)
-        gestures = entries.map { Dictionary($0.map { ($0.gesture, $0.action) }, uniquingKeysWith: { a, _ in a }) } ?? Self.defaultGestures
+        var g = entries.map { Dictionary($0.map { ($0.gesture, $0.action) }, uniquingKeysWith: { a, _ in a }) } ?? Self.defaultGestures
+        // Gestures added in later versions get their defaults when still free.
+        for (tap, action) in Self.defaultGestures where g[tap] == nil && !g.values.contains(action) { g[tap] = action }
+        gestures = g
     }
 
     var textOptions: TextPrep.Options {
