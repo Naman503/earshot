@@ -9,7 +9,7 @@ final class HUD {
     private let reader: Reader
     private let settings: Settings
     private var highlight: NSWindow?
-    private var wordBox: NSWindow?
+    private let marker = WordMarker()
     private let finder = DispatchQueue(label: "earshot.words", qos: .userInteractive)
     private var busy = false
     private var pending: (String, WordLocator)?
@@ -54,7 +54,7 @@ final class HUD {
     /// Moves the marker to `word` on the page. Lookups run one at a time off
     /// the main thread; if the page is slow, words in between are skipped.
     func showWord(_ word: String?, locator: WordLocator?) {
-        guard let word, let locator, settings.highlightWords, settings.highlightWordsOnPage else {
+        guard let word, let locator, settings.highlightWords else {
             if word == nil || locator == nil { hideWord() }
             return
         }
@@ -81,55 +81,18 @@ final class HUD {
     private func missed() {
         // Keep the last spot briefly so one unmatched word doesn't blink.
         if missedSince == nil { missedSince = Date() }
-        if let t = missedSince, Date().timeIntervalSince(t) > 0.8 { wordBox?.orderOut(nil) }
+        if let t = missedSince, Date().timeIntervalSince(t) > 0.8 { marker.hide() }
     }
 
     private func hideWord() {
         pending = nil
         missedSince = nil
-        wordBox?.orderOut(nil)
+        marker.hide()
     }
 
     private func place(_ rect: CGRect) {
         missedSince = nil
-        guard rect.width > 1, rect.height > 4, rect.height < 120,
-              NSScreen.screens.contains(where: { screenRect($0).intersects(rect) }) else { wordBox?.orderOut(nil); return }
-        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
-        let frame = NSRect(x: rect.minX - 3, y: primaryHeight - rect.maxY - 2, width: rect.width + 6, height: rect.height + 4)
-        let w = wordBox ?? {
-            let w = NSWindow(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: true)
-            w.isOpaque = false
-            w.backgroundColor = .clear
-            w.ignoresMouseEvents = true
-            w.level = .statusBar
-            w.hasShadow = false
-            w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .ignoresCycle]
-            let v = NSView()
-            v.wantsLayer = true
-            v.layer?.cornerRadius = 4
-            v.layer?.backgroundColor = NSColor.systemYellow.withAlphaComponent(0.35).cgColor
-            v.layer?.borderWidth = 1.5
-            v.layer?.borderColor = NSColor.systemOrange.withAlphaComponent(0.9).cgColor
-            w.contentView = v
-            wordBox = w
-            return w
-        }()
-        if w.isVisible, abs(w.frame.midY - frame.midY) < frame.height {
-            // Same line: glide along it.
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.08
-                w.animator().setFrame(frame, display: true)
-            }
-        } else {
-            w.setFrame(frame, display: true)
-        }
-        w.orderFrontRegardless()
-    }
-
-    /// A screen's frame in top-left coordinates, like accessibility rects.
-    private func screenRect(_ s: NSScreen) -> CGRect {
-        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
-        return CGRect(x: s.frame.minX, y: primaryHeight - s.frame.maxY, width: s.frame.width, height: s.frame.height)
+        marker.show(rect)
     }
 
     /// Outlines `rect` (top-left screen coordinates) for a moment.
@@ -202,7 +165,7 @@ private struct HUDView: View {
     /// from a little before the word so it's always in view.
     private var spokenText: AttributedString {
         let text = reader.currentText as NSString
-        guard settings.highlightWords, let r = reader.spokenRange, NSMaxRange(r) <= text.length else {
+        guard settings.highlightWordsInBar, let r = reader.spokenRange, NSMaxRange(r) <= text.length else {
             return AttributedString(reader.currentText)
         }
         var start = 0
@@ -235,5 +198,115 @@ private struct HUDView: View {
             Image(systemName: symbol).font(.system(size: 12, weight: .semibold)).frame(width: 26, height: 26)
         }
         .buttonStyle(.borderless)
+    }
+}
+
+/// The follow-along marker: a soft highlight with an accent underline that
+/// glides from word to word. It lives in one transparent, click-through
+/// window over the screen and moves as a Core Animation layer, so each step
+/// is a GPU transform rather than a window move.
+@MainActor
+final class WordMarker {
+    private var window: NSWindow?
+    private let fill = CALayer()
+    private let underline = CALayer()
+    private var visible = false
+    private var lastRect: CGRect?
+
+    func show(_ rect: CGRect) {
+        // Accessibility rects are top-left based; skip off-screen or odd ones.
+        guard rect.width > 1, rect.height > 4, rect.height < 120,
+              let screen = NSScreen.screens.first(where: { topLeftFrame($0).intersects(rect) }) else { hide(); return }
+        let w = window(for: screen)
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        let pad: CGFloat = 3
+        let local = CGRect(x: rect.minX - screen.frame.minX - pad,
+                           y: primaryHeight - rect.maxY - screen.frame.minY - 1,
+                           width: rect.width + pad * 2, height: rect.height + 2)
+        let sameLine = visible && lastRect.map { abs($0.midY - rect.midY) < rect.height * 0.5 } == true
+        CATransaction.begin()
+        if sameLine {
+            CATransaction.setAnimationDuration(0.12)
+            CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
+        } else {
+            CATransaction.setDisableActions(true)  // new line: jump, then fade in
+        }
+        layout(local)
+        CATransaction.commit()
+        if !visible {
+            w.orderFrontRegardless()
+            CATransaction.begin()
+            CATransaction.setAnimationDuration(0.15)
+            fill.opacity = 1
+            underline.opacity = 1
+            CATransaction.commit()
+            visible = true
+        } else if !sameLine {
+            fadeIn()
+        }
+        lastRect = rect
+    }
+
+    func hide() {
+        guard visible else { return }
+        visible = false
+        lastRect = nil
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.2)
+        CATransaction.setCompletionBlock { [weak self] in
+            MainActor.assumeIsolated { if self?.visible == false { self?.window?.orderOut(nil) } }
+        }
+        fill.opacity = 0
+        underline.opacity = 0
+        CATransaction.commit()
+    }
+
+    private func layout(_ r: CGRect) {
+        fill.frame = r
+        fill.cornerRadius = min(6, r.height * 0.3)
+        underline.frame = CGRect(x: r.minX + 2, y: r.minY - 1, width: r.width - 4, height: 2.5)
+    }
+
+    private func fadeIn() {
+        let a = CABasicAnimation(keyPath: "opacity")
+        a.fromValue = 0.2
+        a.toValue = 1
+        a.duration = 0.12
+        fill.add(a, forKey: "fade")
+        underline.add(a, forKey: "fade")
+    }
+
+    private func window(for screen: NSScreen) -> NSWindow {
+        if let w = window, w.frame == screen.frame { return w }
+        let w = window ?? {
+            let w = NSWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: true)
+            w.isOpaque = false
+            w.backgroundColor = .clear
+            w.ignoresMouseEvents = true
+            w.hasShadow = false
+            w.level = .floating
+            w.isReleasedWhenClosed = false
+            w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+            let v = NSView()
+            v.wantsLayer = true
+            let accent = NSColor.controlAccentColor
+            fill.backgroundColor = accent.withAlphaComponent(0.20).cgColor
+            fill.opacity = 0
+            underline.backgroundColor = accent.withAlphaComponent(0.95).cgColor
+            underline.cornerRadius = 1.25
+            underline.opacity = 0
+            v.layer?.addSublayer(fill)
+            v.layer?.addSublayer(underline)
+            w.contentView = v
+            window = w
+            return w
+        }()
+        w.setFrame(screen.frame, display: false)
+        return w
+    }
+
+    private func topLeftFrame(_ s: NSScreen) -> CGRect {
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        return CGRect(x: s.frame.minX, y: primaryHeight - s.frame.maxY, width: s.frame.width, height: s.frame.height)
     }
 }

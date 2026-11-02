@@ -496,6 +496,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         Log.write("locate-test: \(hits)/\(min(25, words.count)) found in \(Int(Date().timeIntervalSince(t0) * 1000)) ms")
                     }
                 }
+            case "--marker-test":
+                // "App|needle": glides the word marker over a paragraph (silent, for screenshots).
+                let bits = value.split(separator: "|", maxSplits: 1).map(String.init)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    guard bits.count == 2, let el = self.grabber.findText(inApp: bits[0], needle: bits[1]),
+                          let loc = self.grabber.locatorForTest(el) else { Log.write("marker-test: not found"); return }
+                    let words = SpokenWord.grouped(SpokenWord.estimated(for: loc.text, duration: 10)).prefix(30)
+                    for (n, w) in words.enumerated() {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + Double(n) * 0.25) {
+                            self.hud.showWord((loc.text as NSString).substring(with: w.range), locator: loc.locator)
+                        }
+                    }
+                    // Screenshots of the display at two moments, into the log folder.
+                    for (k, t) in [(1, 1.6), (2, 3.3)] {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + t) {
+                            Task {
+                                guard let content = try? await SCShareableContent.current, let d = content.displays.first else { return }
+                                let config = SCStreamConfiguration()
+                                config.width = d.width * 2
+                                config.height = d.height * 2
+                                guard let img = try? await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(display: d, excludingWindows: []), configuration: config) else { Log.write("marker-test: capture failed"); return }
+                                let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Earshot/marker-\(k).png")
+                                try? NSBitmapImageRep(cgImage: img).representation(using: .png, properties: [:])?.write(to: url)
+                                Log.write("marker-test: saved \(url.path)")
+                            }
+                        }
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + Double(words.count) * 0.25 + 0.5) { self.hud.showWord(nil, locator: nil) }
+                }
             case "--mic-test":
                 waitForEngine { self.dictation.micTest(seconds: Double(value) ?? 3) }
             case "--dictate-test":

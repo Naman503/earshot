@@ -25,8 +25,10 @@ final class Settings: ObservableObject {
     @Published var skipEmoji: Bool { didSet { save("skipEmoji", skipEmoji) } }
     @Published var highlightSource: Bool { didSet { save("highlightSource", highlightSource) } }
     /// Follow-along: light up the word being spoken on the page and in the bar.
+    /// Follow-along marker on the page itself.
     @Published var highlightWords: Bool { didSet { save("highlightWords", highlightWords) } }
-    @Published var highlightWordsOnPage: Bool { didSet { save("highlightWordsOnPage", highlightWordsOnPage) } }
+    /// Also light up the word in the now-reading bar (off: the page is enough).
+    @Published var highlightWordsInBar: Bool { didSet { save("highlightWordsInBar", highlightWordsInBar) } }
     @Published var showHUD: Bool { didSet { save("showHUD", showHUD) } }
 
     /// How far a paragraph tap reaches: paragraphs above, and below (-1 = to the end).
@@ -130,7 +132,7 @@ final class Settings: ObservableObject {
         skipEmoji = d.object(forKey: "skipEmoji") as? Bool ?? true
         highlightSource = d.object(forKey: "highlightSource") as? Bool ?? true
         highlightWords = d.object(forKey: "highlightWords") as? Bool ?? true
-        highlightWordsOnPage = d.object(forKey: "highlightWordsOnPage") as? Bool ?? true
+        highlightWordsInBar = d.object(forKey: "highlightWordsInBar") as? Bool ?? false
         paragraphsBefore = d.object(forKey: "paragraphsBefore") as? Int ?? 0
         paragraphsAfter = d.object(forKey: "paragraphsAfter") as? Int ?? 0
         tapReadsSelection = d.object(forKey: "tapReadsSelection") as? Bool ?? true

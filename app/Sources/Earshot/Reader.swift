@@ -104,6 +104,7 @@ final class Reader: ObservableObject {
         let started = start(parts, at: 0, quiet: quiet, onFinish: onFinish)
         if started {
             self.locator = locator
+            startWordTracking()
             self.onInterrupt = onInterrupt
             paragraphOf = mapped.map(\.paragraph)
             if !source.hasPrefix("notification"), source != "sample", source != "read again" {
@@ -158,9 +159,7 @@ final class Reader: ObservableObject {
         bakedFor = [:]
         leadInIndex = index
         applyAudioSettings()
-        wordTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.trackWord() }
-        }
+        startWordTracking()
         if settleFirst {
             // Ducking just reconfigured the output; let it settle before speaking.
             let id = readID
@@ -429,6 +428,20 @@ final class Reader: ObservableObject {
 
     // MARK: Following along
 
+    /// Follows words only when something shows them: a page to mark, or the
+    /// bar highlight. 20 checks a second is smooth for speech even at 3x.
+    private func startWordTracking() {
+        wordTimer?.invalidate()
+        wordTimer = nil
+        guard isActive, (locator != nil && settings.highlightWords) || settings.highlightWordsInBar else { return }
+        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.trackWord() }
+        }
+        timer.tolerance = 0.01
+        RunLoop.main.add(timer, forMode: .common)
+        wordTimer = timer
+    }
+
     private func resetTimeline() {
         chunkFrames = [:]
         scheduledFrames = 0
@@ -455,14 +468,15 @@ final class Reader: ObservableObject {
         guard s?.chunk != spoken?.chunk || s?.word != spoken?.word else { return }
         spoken = s
         guard let s, let w = timings[s.chunk]?[s.word], s.chunk < chunks.count else {
-            spokenRange = nil
+            if spokenRange != nil { spokenRange = nil }
             onWord?(nil, locator)
             return
         }
         let text = chunks[s.chunk] as NSString
         guard NSMaxRange(w.range) <= text.length else { return }
-        spokenRange = s.chunk == position - 1 ? w.range : nil
-        onWord?(text.substring(with: w.range), locator)
+        // Only redraw the bar per word when it shows the word.
+        if settings.highlightWordsInBar { spokenRange = s.chunk == position - 1 ? w.range : nil }
+        if locator != nil, settings.highlightWords { onWord?(text.substring(with: w.range), locator) }
     }
 
     // MARK: Headphones
