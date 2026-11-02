@@ -24,6 +24,15 @@ final class Settings: ObservableObject {
     @Published var highlightSource: Bool { didSet { save("highlightSource", highlightSource) } }
     @Published var showHUD: Bool { didSet { save("showHUD", showHUD) } }
 
+    /// How far a paragraph tap reaches: paragraphs above, and below (-1 = to the end).
+    @Published var paragraphsBefore: Int { didSet { save("paragraphsBefore", paragraphsBefore) } }
+    @Published var paragraphsAfter: Int { didSet { save("paragraphsAfter", paragraphsAfter) } }
+    /// A tap on selected text reads the selection.
+    @Published var tapReadsSelection: Bool { didSet { save("tapReadsSelection", tapReadsSelection) } }
+    @Published var pronunciations: [Pronunciation] { didSet { saveJSON("pronunciations", pronunciations) } }
+    /// Pause reading (and hold notifications) while another app uses a microphone.
+    @Published var pauseForCalls: Bool { didSet { save("pauseForCalls", pauseForCalls) } }
+
     // Output and media
     @Published var outputPolicy: OutputPolicy { didSet { save("outputPolicy", outputPolicy.rawValue) } }
     @Published var allowedDeviceUIDs: [String] { didSet { save("allowedDeviceUIDs", allowedDeviceUIDs) } }
@@ -84,6 +93,10 @@ final class Settings: ObservableObject {
             .previousSentence: KeyCombo(keyCode: UInt32(kVK_LeftArrow), modifiers: ctrlOpt),
             .faster: KeyCombo(keyCode: UInt32(kVK_UpArrow), modifiers: ctrlOpt),
             .slower: KeyCombo(keyCode: UInt32(kVK_DownArrow), modifiers: ctrlOpt),
+            .nextParagraph: KeyCombo(keyCode: UInt32(kVK_RightArrow), modifiers: ctrlOpt | UInt32(shiftKey)),
+            .previousParagraph: KeyCombo(keyCode: UInt32(kVK_LeftArrow), modifiers: ctrlOpt | UInt32(shiftKey)),
+            .clipboard: KeyCombo(keyCode: UInt32(kVK_ANSI_C), modifiers: ctrlOpt),
+            .readAgain: KeyCombo(keyCode: UInt32(kVK_ANSI_Z), modifiers: ctrlOpt),
             .readNotification: KeyCombo(keyCode: UInt32(kVK_ANSI_N), modifiers: ctrlOpt),
             .summarize: KeyCombo(keyCode: UInt32(kVK_ANSI_G), modifiers: ctrlOpt),
             .autoReadToggle: KeyCombo(keyCode: UInt32(kVK_ANSI_L), modifiers: ctrlOpt),
@@ -109,6 +122,11 @@ final class Settings: ObservableObject {
         skipCitations = d.object(forKey: "skipCitations") as? Bool ?? true
         skipEmoji = d.object(forKey: "skipEmoji") as? Bool ?? true
         highlightSource = d.object(forKey: "highlightSource") as? Bool ?? true
+        paragraphsBefore = d.object(forKey: "paragraphsBefore") as? Int ?? 0
+        paragraphsAfter = d.object(forKey: "paragraphsAfter") as? Int ?? 0
+        tapReadsSelection = d.object(forKey: "tapReadsSelection") as? Bool ?? true
+        pronunciations = Self.loadJSON("pronunciations", from: d) ?? []
+        pauseForCalls = d.object(forKey: "pauseForCalls") as? Bool ?? true
         showHUD = d.object(forKey: "showHUD") as? Bool ?? true
         outputPolicy = OutputPolicy(rawValue: d.string(forKey: "outputPolicy") ?? "") ?? .headphonesOnly
         allowedDeviceUIDs = d.stringArray(forKey: "allowedDeviceUIDs") ?? []

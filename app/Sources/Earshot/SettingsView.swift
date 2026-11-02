@@ -496,6 +496,23 @@ private struct GesturesTab: View {
         Form {
             Toggle("Trackpad gestures", isOn: $settings.gesturesEnabled)
             Section {
+                Picker("Paragraphs above", selection: $settings.paragraphsBefore) {
+                    Text("None").tag(0)
+                    ForEach(1...10, id: \.self) { Text("\($0)").tag($0) }
+                }
+                Picker("Paragraphs below", selection: $settings.paragraphsAfter) {
+                    Text("None").tag(0)
+                    ForEach(1...10, id: \.self) { Text("\($0)").tag($0) }
+                    Text("To the end").tag(-1)
+                }
+                Toggle("If text is selected, a tap reads the selection", isOn: $settings.tapReadsSelection)
+            } header: {
+                Text("How much “Read paragraph” reads")
+            } footer: {
+                Text("Applies to the paragraph tap and shortcut. Headings and short lines in between come along but don't count. For other amounts, give a gesture “Read the whole section”, “Read from pointer to the end” or “Read everything visible on screen”.")
+                    .font(.caption)
+            }
+            Section {
                 ForEach(TrackpadTap.all, id: \.self) { g in
                     Picker(g.label, selection: Binding(
                         get: { settings.gestures[g] ?? .none },
@@ -530,8 +547,53 @@ private struct ReadingTab: View {
                 Toggle("Show the now-reading bar", isOn: $settings.showHUD)
                 Toggle("Outline the text that was picked up", isOn: $settings.highlightSource)
             }
+            Section("Calls") {
+                Toggle("Pause reading and hold notifications while another app uses the microphone", isOn: $settings.pauseForCalls)
+            }
+            PronunciationsSection()
         }
         .formStyle(.grouped)
+    }
+}
+
+private struct PronunciationsSection: View {
+    @EnvironmentObject var settings: Settings
+    @State private var word = ""
+    @State private var say = ""
+
+    var body: some View {
+        Section {
+            ForEach(settings.pronunciations) { fix in
+                HStack {
+                    Text(fix.word).frame(width: 160, alignment: .leading)
+                    Image(systemName: "arrow.right").foregroundStyle(.secondary)
+                    Text(fix.say)
+                    Spacer()
+                    Button { AppDelegate.shared.reader.read(fix.word, source: "sample") } label: { Image(systemName: "play.circle") }
+                        .buttonStyle(.borderless)
+                    Button { settings.pronunciations.removeAll { $0 == fix } } label: { Image(systemName: "minus.circle") }
+                        .buttonStyle(.borderless)
+                }
+            }
+            HStack {
+                TextField("Word", text: $word).frame(width: 160)
+                TextField("Say it like", text: $say)
+                Button("Test") { AppDelegate.shared.reader.read(say.isEmpty ? word : say, source: "sample") }
+                    .disabled(word.isEmpty && say.isEmpty)
+                Button("Add") {
+                    settings.pronunciations.removeAll { $0.word.caseInsensitiveCompare(word) == .orderedSame }
+                    settings.pronunciations.append(Pronunciation(word: word, say: say))
+                    word = ""
+                    say = ""
+                }
+                .disabled(word.trimmingCharacters(in: .whitespaces).isEmpty || say.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        } header: {
+            Text("Pronunciations")
+        } footer: {
+            Text("Whole words, any capitalization. Spell it the way it sounds, e.g. Eazeebox → easy box, SQL → sequel, Naman → nuh-mun.")
+                .font(.caption)
+        }
     }
 }
 

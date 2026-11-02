@@ -10,6 +10,9 @@ struct Grab {
     var text: String
     var frame: CGRect?
     var source: String
+    /// Text above / below a paragraph, so a tap can read more than one.
+    var before: String? = nil
+    var after: String? = nil
 }
 
 enum GrabUnit: String { case sentence, paragraph, fromHere, section, visible, window, selection }
@@ -38,12 +41,28 @@ final class TextGrabber {
 
     // MARK: Selection
 
-    func selection() -> Grab? {
+    /// The current selection. With `near`, only a selection the pointer is on
+    /// (or, when its position is unknown, one in the app under the pointer) —
+    /// so a tap reads a fresh selection, not one left behind elsewhere.
+    func selection(near point: CGPoint? = nil) -> Grab? {
+        guard let grab = currentSelection() else { return nil }
+        guard let point else { return grab }
+        if let f = grab.frame { return f.insetBy(dx: -60, dy: -40).contains(point) ? grab : nil }
+        var focused: CFTypeRef?
+        AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused)
+        var focusedPID: pid_t = 0, pointerPID: pid_t = 0
+        if let f = focused { AXUIElementGetPid(f as! AXUIElement, &focusedPID) }
+        if let el = element(at: point) { AXUIElementGetPid(el, &pointerPID) }
+        return focusedPID != 0 && focusedPID == pointerPID ? grab : nil
+    }
+
+    private func currentSelection() -> Grab? {
         var focused: CFTypeRef?
         guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
               let el = focused.map({ $0 as! AXUIElement }) else { return nil }
         if let s = string(el, kAXSelectedTextAttribute), !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return Grab(text: s, frame: nil, source: "selection")
+            let rect = attr(el, kAXSelectedTextRangeAttribute).flatMap { paramRect(el, kAXBoundsForRangeParameterizedAttribute, $0) }
+            return Grab(text: s, frame: rect, source: "selection")
         }
         // Web content: the selection lives on the web area as a text-marker range.
         if let web = ancestor(of: el, role: "AXWebArea") ?? (role(el) == "AXWebArea" ? el : nil),
@@ -141,7 +160,16 @@ final class TextGrabber {
         text = String(text.prefix(maxChars)).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return nil }
         let rect = [.paragraph, .sentence, .section].contains(unit) ? paramRect(web, "AXBoundsForTextMarkerRange", range) : nil
-        return Grab(text: text, frame: rect, source: "web text markers")
+        var grab = Grab(text: text, frame: rect, source: "web text markers")
+        if unit == .paragraph, CFGetTypeID(range) == AXTextMarkerRangeGetTypeID(),
+           let docStart = attr(web, "AXStartTextMarker"), let docEnd = attr(web, "AXEndTextMarker") {
+            let r = range as! AXTextMarkerRange
+            grab.before = paramString(web, "AXStringForTextMarkerRange",
+                                      AXTextMarkerRangeCreate(nil, docStart as! AXTextMarker, AXTextMarkerRangeCopyStartMarker(r))).map { String($0.suffix(30_000)) }
+            grab.after = paramString(web, "AXStringForTextMarkerRange",
+                                     AXTextMarkerRangeCreate(nil, AXTextMarkerRangeCopyEndMarker(r), docEnd as! AXTextMarker)).map { String($0.prefix(maxChars)) }
+        }
+        return grab
     }
 
     /// The text range of the paragraph holding `el`: climbs out of links into
@@ -290,7 +318,14 @@ final class TextGrabber {
         let text = (full as NSString).substring(with: ns).trimmingCharacters(in: .whitespacesAndNewlines)
         var cf = CFRange(location: ns.location, length: ns.length)
         let rect = AXValueCreate(.cfRange, &cf).flatMap { paramRect(el, kAXBoundsForRangeParameterizedAttribute, $0) }
-        return text.isEmpty ? nil : Grab(text: String(text.prefix(maxChars)), frame: rect, source: "text view")
+        guard !text.isEmpty else { return nil }
+        var grab = Grab(text: String(text.prefix(maxChars)), frame: rect, source: "text view")
+        if unit == .paragraph {
+            let s = full as NSString
+            grab.before = String(s.substring(to: ns.location).suffix(30_000))
+            grab.after = String(s.substring(from: NSMaxRange(ns)).prefix(maxChars))
+        }
+        return grab
     }
 
     /// Anything else: the element's own text, widened to its container when that
@@ -525,7 +560,9 @@ final class TextGrabber {
         case .sentence:
             return Grab(text: TextUnits.substring(.sentence, in: blocks[i].text, at: 0), frame: blocks[i].rect, source: "OCR")
         default:
-            return Grab(text: blocks[i].text, frame: blocks[i].rect, source: "OCR")
+            return Grab(text: blocks[i].text, frame: blocks[i].rect, source: "OCR",
+                        before: blocks[..<i].map(\.text).joined(separator: "\n"),
+                        after: blocks[(i + 1)...].map(\.text).joined(separator: "\n"))
         }
     }
 

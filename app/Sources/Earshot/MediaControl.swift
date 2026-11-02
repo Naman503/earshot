@@ -21,6 +21,20 @@ final class MediaControl {
             .filter { !Self.ignored.contains($0) }
     }
 
+    /// True when another app is recording from a microphone (a call, a voice note).
+    static func onCall() -> Bool {
+        let me = ProcessInfo.processInfo.processIdentifier
+        return CoreAudioQuery.array(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyProcessObjectList, of: AudioObjectID.self)
+            .contains { obj in
+                let input: UInt32 = CoreAudioQuery.get(obj, kAudioProcessPropertyIsRunningInput, 0) ?? 0
+                let pid: pid_t = CoreAudioQuery.get(obj, kAudioProcessPropertyPID, pid_t(0)) ?? 0
+                guard input != 0, pid != me else { return false }
+                let bundle = CoreAudioQuery.string(obj, kAudioProcessPropertyBundleID) ?? ""
+                // Siri, dictation and system services briefly open the mic; they aren't calls.
+                return !bundle.hasPrefix("com.apple.") || bundle == "com.apple.FaceTime"
+            }
+    }
+
     /// System sound sources that never respond to play/pause.
     private static let ignored: Set<String> = [
         "com.apple.audio.coreaudiod", "com.apple.systemsoundserverd", "com.apple.CoreSpeech",

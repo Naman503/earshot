@@ -3,7 +3,8 @@ import Foundation
 /// Everything a shortcut or gesture can trigger.
 public enum ReadAction: String, CaseIterable, Codable, Sendable, Identifiable {
     case smartRead, paragraph, sentence, fromHere, section, visible, selection, window
-    case pauseResume, stop, nextSentence, previousSentence, faster, slower
+    case clipboard, readAgain
+    case pauseResume, stop, nextSentence, previousSentence, nextParagraph, previousParagraph, faster, slower
     case readNotification, summarize, autoReadToggle, dictate
     case none
 
@@ -21,6 +22,10 @@ public enum ReadAction: String, CaseIterable, Codable, Sendable, Identifiable {
         case .window: "Read the whole window"
         case .pauseResume: "Pause / resume"
         case .stop: "Stop"
+        case .clipboard: "Read the clipboard"
+        case .readAgain: "Read the last thing again"
+        case .nextParagraph: "Skip to next paragraph"
+        case .previousParagraph: "Back one paragraph"
         case .nextSentence: "Skip to next sentence"
         case .previousSentence: "Back one sentence"
         case .faster: "Speed up"

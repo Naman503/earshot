@@ -114,6 +114,67 @@ extension TextPrep {
     }
 }
 
+extension TextUnits {
+    /// Widens a paragraph with the `before` paragraphs above it and `after`
+    /// below it (`after` < 0 means to the end). Only real paragraphs (≥ `minLength`
+    /// characters) count; headings and short lines between them come along.
+    public static func expand(current: String, before: String, after: String,
+                              paragraphsBefore: Int, paragraphsAfter: Int, minLength: Int = 30) -> String {
+        func lines(_ s: String) -> [String] {
+            s.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        }
+        var head: [String] = []
+        if paragraphsBefore > 0 {
+            var count = 0
+            for line in lines(before).reversed() {
+                head.insert(line, at: 0)
+                if line.count >= minLength { count += 1 }
+                if count == paragraphsBefore { break }
+            }
+        }
+        var tail: [String] = []
+        if paragraphsAfter != 0 {
+            var count = 0
+            for line in lines(after) {
+                if paragraphsAfter > 0, count == paragraphsAfter, line.count >= minLength { break }
+                tail.append(line)
+                if line.count >= minLength { count += 1 }
+            }
+            // Don't end on a dangling heading.
+            while paragraphsAfter > 0, let last = tail.last, last.count < minLength { tail.removeLast() }
+        }
+        return (head + [current.trimmingCharacters(in: .whitespacesAndNewlines)] + tail).joined(separator: "\n")
+    }
+}
+
+/// A word the voice gets wrong and how to say it instead.
+public struct Pronunciation: Codable, Hashable, Sendable, Identifiable {
+    public var word: String
+    public var say: String
+    public var id: String { word }
+    public init(word: String, say: String) { self.word = word; self.say = say }
+}
+
+extension TextPrep {
+    /// Replaces whole words (case-insensitive) with how they should be said.
+    public static func apply(_ fixes: [Pronunciation], to text: String) -> String {
+        fixes.reduce(text) { s, fix in
+            let word = fix.word.trimmingCharacters(in: .whitespaces)
+            guard !word.isEmpty else { return s }
+            let pattern = "(?<![\\p{L}\\p{N}])" + NSRegularExpression.escapedPattern(for: word) + "(?![\\p{L}\\p{N}])"
+            return s.replacingOccurrences(of: pattern, with: NSRegularExpression.escapedTemplate(for: fix.say),
+                                          options: [.regularExpression, .caseInsensitive])
+        }
+    }
+
+    /// Chunks plus the paragraph each one starts in (for skipping by paragraph).
+    public static func chunksWithParagraphs(_ text: String) -> [(text: String, paragraph: Int)] {
+        text.components(separatedBy: "\n").filter { !$0.isEmpty }.enumerated().flatMap { i, para in
+            chunks(para, firstMaxLength: i == 0 ? 110 : 220).map { ($0, i) }
+        }
+    }
+}
+
 /// Finds the sentence / paragraph / rest-of-text around a character index.
 public enum TextUnits {
     public enum Unit: Sendable { case sentence, paragraph, fromHere, section, all }

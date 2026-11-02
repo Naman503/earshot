@@ -35,6 +35,10 @@ final class Announcer: ObservableObject {
             Log.write("announce: quiet hours, skipping \(note.app)")
             return
         }
+        if settings.pauseForCalls, MediaControl.onCall() {
+            Log.write("announce: on a call, skipping \(note.app)")
+            return
+        }
         queue.append(note)
         drain()
     }

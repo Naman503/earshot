@@ -6,7 +6,8 @@
 
 | | |
 |---|---|
-| Point and tap | Four-finger tap on the trackpad reads the paragraph under the pointer. Double-tap reads from there to the end. No selecting. |
+| Point and tap | Four-finger tap on the trackpad reads the paragraph under the pointer — or as many paragraphs above and below as you set, or on to the end. Tap on a selection to read just the selection. Double-tap reads from there to the end. |
+| Pronunciations and calls | Teach it how to say names and jargon. Reading pauses and notifications wait while another app is on a call. |
 | Works everywhere | One app for every program, including browsers (Safari, Chrome, Brave, Arc, Edge) — no extension. Falls back to on-screen OCR for images and PDFs. |
 | Natural and fast | Kokoro-82M runs locally on Apple Silicon (~12× real time, first words in ~0.3 s). Speech is generated at its natural pace and sped up with WSOLA, which keeps words clear at 2–3× (Whisper misheard 8% of words at 2× vs 21% before). 28 English voices, grouped by clarity at speed; click one to hear it. |
 | Headphones only | Never speaks on the Mac speakers unless you allow it. Pauses when headphones disconnect, resumes when they're back. |
@@ -29,6 +30,9 @@
 | Pause / resume | ⌃⌥P | 3-finger double-tap |
 | Stop | ⌃⌥S or Esc while reading | 5-finger tap |
 | Next / previous sentence | ⌃⌥→ / ⌃⌥← | |
+| Next / previous paragraph | ⌃⌥⇧→ / ⌃⌥⇧← | |
+| Read the clipboard | ⌃⌥C | |
+| Read the last thing again | ⌃⌥Z | |
 | Faster / slower | ⌃⌥↑ / ⌃⌥↓ | |
 | Dictate (hold to talk, or tap to start/stop) | ⌃⌥D | |
 | Auto-read new text on this page (on/off) | ⌃⌥L | |

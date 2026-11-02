@@ -42,6 +42,24 @@ final class TextPrepTests: XCTestCase {
                        "Setup\nInstall it first.\nThen run it.")
     }
 
+    func testExpandParagraphs() {
+        let p = { (n: Int) in "Paragraph \(n) has enough words in it to count as real." }
+        let before = [p(1), "Heading", p(2), p(3)].joined(separator: "\n")
+        let after = [p(5), "Copy", p(6), "Next heading", p(7)].joined(separator: "\n")
+        XCTAssertEqual(TextUnits.expand(current: p(4), before: before, after: after, paragraphsBefore: 0, paragraphsAfter: 0), p(4))
+        XCTAssertEqual(TextUnits.expand(current: p(4), before: before, after: after, paragraphsBefore: 2, paragraphsAfter: 2),
+                       [p(2), p(3), p(4), p(5), "Copy", p(6)].joined(separator: "\n"))
+        XCTAssertEqual(TextUnits.expand(current: p(4), before: before, after: after, paragraphsBefore: 3, paragraphsAfter: -1),
+                       [p(1), "Heading", p(2), p(3), p(4), p(5), "Copy", p(6), "Next heading", p(7)].joined(separator: "\n"))
+    }
+
+    func testPronunciationsAndParagraphChunks() {
+        let fixes = [Pronunciation(word: "Eazeebox", say: "easy box"), Pronunciation(word: "SQL", say: "sequel")]
+        XCTAssertEqual(TextPrep.apply(fixes, to: "Eazeebox uses SQL; eazeebox's SQLite"), "easy box uses sequel; easy box's SQLite")
+        let chunks = TextPrep.chunksWithParagraphs("One. Two.\nThree.")
+        XCTAssertEqual(chunks.map(\.paragraph), [0, 0, 1])
+    }
+
     func testSentenceAndParagraphUnits() {
         let text = "First one. Second one here.\nOther paragraph."
         XCTAssertEqual(TextUnits.substring(.sentence, in: text, at: 14), "Second one here.")

@@ -62,6 +62,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.announcer.readLatestOrAnswer()
                 return
             }
+            // A tap on selected text reads exactly the selection.
+            if self.settings.tapReadsSelection, [.paragraph, .sentence, .section, .fromHere, .smartRead].contains(action),
+               let sel = self.grabber.selection(near: TextGrabber.pointer) {
+                Log.write("gesture: reading the selection (\(sel.text.count) chars)")
+                self.start(sel)
+                return
+            }
             self.perform(action)
         }
 
@@ -147,6 +154,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .readNotification: announcer.readLatestOrAnswer()
         case .summarize: summarize()
         case .autoReadToggle: pageWatcher.togglePin()
+        case .clipboard:
+            if let s = NSPasteboard.general.string(forType: .string), !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                reader.read(s, source: "clipboard")
+            } else {
+                reader.flash("The clipboard has no text")
+            }
+        case .readAgain:
+            if let last = reader.history.first { reader.read(last, source: "read again") } else { reader.flash("Nothing read yet") }
+        case .nextParagraph: reader.skipParagraph(1)
+        case .previousParagraph: reader.skipParagraph(-1)
         case .nextSentence: reader.skip(1)
         case .previousSentence: reader.skip(-1)
         case .faster: reader.changeSpeed(by: 0.1)
@@ -169,7 +186,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             await MainActor.run {
                 let app = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
                 Log.write("grab \(unit.rawValue) in \(app): \(grab?.source ?? "nothing") in \(Int(Date().timeIntervalSince(started) * 1000)) ms: \(grab?.text.prefix(80) ?? "")")
-                if let grab { self.start(grab) } else { self.reader.flash("Couldn't find text under the pointer") }
+                guard var grab else { self.reader.flash("Couldn't find text under the pointer"); return }
+                // Paragraph reach: read N paragraphs above and below as set in Settings.
+                if unit == .paragraph, self.settings.paragraphsBefore > 0 || self.settings.paragraphsAfter != 0 {
+                    grab.text = TextUnits.expand(current: grab.text, before: grab.before ?? "", after: grab.after ?? "",
+                                                 paragraphsBefore: self.settings.paragraphsBefore,
+                                                 paragraphsAfter: self.settings.paragraphsAfter)
+                }
+                self.start(grab)
             }
         }
     }
@@ -245,6 +269,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             add(menu, reader.state == .paused ? "Resume" : "Pause", .pauseResume)
             add(menu, "Stop", .stop)
         }
+        if !reader.history.isEmpty {
+            let recent = NSMenuItem(title: "Recently read", action: nil, keyEquivalent: "")
+            let sub = NSMenu()
+            for (i, text) in reader.history.prefix(10).enumerated() {
+                let title = text.replacingOccurrences(of: "\n", with: " ").prefix(60)
+                let item = NSMenuItem(title: String(title) + (text.count > 60 ? "…" : ""), action: #selector(readHistory(_:)), keyEquivalent: "")
+                item.target = self
+                item.tag = i
+                sub.addItem(item)
+            }
+            recent.submenu = sub
+            menu.addItem(recent)
+        }
         if !announcer.history.isEmpty {
             let recent = NSMenuItem(title: "Recent notifications", action: nil, keyEquivalent: "")
             let sub = NSMenu()
@@ -293,6 +330,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let raw = item.representedObject as? String, let action = ReadAction(rawValue: raw) else { return }
         // Let the menu close so the pointer target is the page, not the menu.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { self.perform(action) }
+    }
+
+    @objc private func readHistory(_ item: NSMenuItem) {
+        guard reader.history.indices.contains(item.tag) else { return }
+        reader.read(reader.history[item.tag], source: "read again")
     }
 
     @objc private func readNote(_ item: NSMenuItem) {

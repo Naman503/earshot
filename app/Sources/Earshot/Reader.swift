@@ -14,6 +14,8 @@ final class Reader: ObservableObject {
     @Published private(set) var total = 0
     /// One-off status for the HUD ("Connect headphones…").
     @Published var notice: String?
+    /// Recently read texts, newest first (for "Read again" and the menu).
+    @Published private(set) var history: [String] = []
     var onStateChange: ((State) -> Void)?
 
     private let settings: Settings
@@ -40,6 +42,10 @@ final class Reader: ObservableObject {
     private var deviceID: AudioDeviceID = 0
     private var pausedByRoute = false
     private var onFinish: (() -> Void)?
+    /// Paragraph number of each chunk (for paragraph skips).
+    private var paragraphOf: [Int] = []
+    private var callTimer: Timer?
+    private var pausedForCall = false
     /// Runs when this reading is cut short (Esc, a new tap, headphones gone).
     private var onInterrupt: (() -> Void)?
     private let lookahead = 4
@@ -67,15 +73,24 @@ final class Reader: ObservableObject {
     @discardableResult
     func read(_ raw: String, source: String, quiet: Bool = false,
               onFinish: (() -> Void)? = nil, onInterrupt: (() -> Void)? = nil) -> Bool {
-        let text = TextPrep.clean(raw, options: settings.textOptions)
-        let parts = TextPrep.chunks(text)
+        let text = TextPrep.apply(settings.pronunciations, to: TextPrep.clean(raw, options: settings.textOptions))
+        let mapped = TextPrep.chunksWithParagraphs(text)
+        let parts = mapped.map(\.text)
         guard !parts.isEmpty else {
             if !quiet { flash("Nothing to read here") }
             return false
         }
         Log.write("read: \(parts.count) chunks from \(source), \(text.count) chars")
         let started = start(parts, at: 0, quiet: quiet, onFinish: onFinish)
-        if started { self.onInterrupt = onInterrupt }
+        if started {
+            self.onInterrupt = onInterrupt
+            paragraphOf = mapped.map(\.paragraph)
+            if !source.hasPrefix("notification"), source != "sample", source != "read again" {
+                history.removeAll { $0 == raw }
+                history.insert(raw, at: 0)
+                if history.count > 15 { history.removeLast() }
+            }
+        }
         return started
     }
 
@@ -108,7 +123,7 @@ final class Reader: ObservableObject {
             flash("Couldn't start audio: \(error.localizedDescription)")
             return false
         }
-        quietOthers()
+        let settleFirst = quietOthers()
         deviceID = device.id
         readID += 1
         chunks = parts
@@ -121,7 +136,16 @@ final class Reader: ObservableObject {
         bakedSpeed = usesKokoro ? settings.speed : 1
         leadInIndex = index
         applyAudioSettings()
-        audio.player.play()
+        if settleFirst {
+            // Ducking just reconfigured the output; let it settle before speaking.
+            let id = readID
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                guard let self, self.readID == id, self.state != .paused else { return }
+                self.audio.player.play()
+            }
+        } else {
+            audio.player.play()
+        }
         setState(.preparing)
         fill()
         return true
@@ -164,6 +188,33 @@ final class Reader: ObservableObject {
             setState(scheduled.isEmpty ? .preparing : .speaking)
         case .idle:
             break
+        }
+    }
+
+    /// Jumps to the start of the next / previous paragraph.
+    func skipParagraph(_ delta: Int) {
+        guard isActive, !chunks.isEmpty, paragraphOf.count == chunks.count else { skip(delta); return }
+        let current = paragraphOf[min(index, paragraphOf.count - 1)]
+        let target = max(0, current + delta)
+        if let i = paragraphOf.firstIndex(where: { $0 == target }) {
+            restartAt(i, on: nil)
+        } else if delta > 0 {
+            stop()
+        }
+    }
+
+    /// Pauses while another app has a microphone open (a call), checked every second.
+    private func watchForCalls(_ on: Bool) {
+        callTimer?.invalidate()
+        callTimer = nil
+        guard on, settings.pauseForCalls else { return }
+        callTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.state == .speaking || self.state == .preparing, MediaControl.onCall() else { return }
+                self.togglePause()
+                self.pausedForCall = true
+                self.flash("Paused — a call is using the microphone")
+            }
         }
     }
 
@@ -221,7 +272,7 @@ final class Reader: ObservableObject {
         let text = chunks[i]
         let stretch = bakedSpeed
         let kokoroSession = usesKokoro
-        let leadIn = i == leadInIndex ? 0.18 : 0
+        let leadIn = i == leadInIndex ? 0.3 : 0
         Task {
             let result: SpeechAudio?
             if kokoroSession {
@@ -334,6 +385,7 @@ final class Reader: ObservableObject {
 
     private func setState(_ s: State) {
         guard s != state else { return }
+        if s == .idle || state == .idle { watchForCalls(s != .idle) }
         state = s
         onStateChange?(s)
     }
@@ -348,10 +400,16 @@ final class Reader: ObservableObject {
     /// Resumes media paused for a chain of readings (announcement → answer → body).
     func resumeMedia() { restoreOthers() }
 
-    /// Ducks (or, if that isn't possible, pauses) other audio per the media setting.
-    private func quietOthers() {
-        guard settings.mediaPolicy == .duck else { return }
-        if !ducker.duck(to: settings.duckLevel), !media.hasPaused { media.pauseOthers() }
+    /// Ducks (or, if that isn't possible, pauses) other audio per the media
+    /// setting — only when something else is actually playing. Returns true when
+    /// the output was just reconfigured and speech should wait a moment.
+    @discardableResult
+    private func quietOthers() -> Bool {
+        guard settings.mediaPolicy == .duck else { return false }
+        guard ducker.isLingering || !MediaControl.playingApps().isEmpty else { return false }
+        var fresh = false
+        if !ducker.duck(to: settings.duckLevel, freshlyBuilt: &fresh), !media.hasPaused { media.pauseOthers() }
+        return fresh
     }
 
     private func restoreOthers() {

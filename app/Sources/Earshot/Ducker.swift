@@ -27,14 +27,24 @@ final class Ducker {
         let step: Float = 1.0 / 7200
     }
 
+    /// True while the tap and aggregate device exist (including the idle linger).
+    private var built: Bool { aggregateID != kAudioObjectUnknown }
+
     /// Ducks other audio to `level` (0…1). Returns false when ducking isn't possible.
+    /// `freshlyBuilt` tells the caller the output was just reconfigured, so it
+    /// should give the device a moment before starting speech.
     @discardableResult
-    func duck(to level: Double) -> Bool {
+    func duck(to level: Double, freshlyBuilt: UnsafeMutablePointer<Bool>? = nil) -> Bool {
         gain.target = Float(max(0, min(level, 1)))
         if active { return true }
+        if built {
+            active = true  // reuse the lingering tap: no device reconfiguration
+            return true
+        }
         guard !unavailable else { return false }
         do {
             try build()
+            freshlyBuilt?.pointee = true
             active = true
             Log.write("duck: other audio at \(Int(level * 100))%")
             return true
@@ -47,17 +57,26 @@ final class Ducker {
         }
     }
 
-    /// Fades other audio back up, then releases the tap.
+    /// Fades other audio back up. The tap lingers (passing audio through at
+    /// full volume) for a while, so the next reading doesn't reconfigure the
+    /// output device — that reconfiguration is what swallowed first words.
     func release() {
         guard active else { return }
         gain.target = 1
         active = false
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-            guard let self, !self.active else { return }
+        releaseToken += 1
+        let token = releaseToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in
+            guard let self, !self.active, token == self.releaseToken else { return }
             self.teardown()
             Log.write("duck: released")
         }
     }
+
+    private var releaseToken = 0
+
+    /// Built and idle, passing audio through at full volume.
+    var isLingering: Bool { built && !active }
 
     /// Lets a later attempt try again (e.g. after the user grants permission).
     func resetAvailability() { unavailable = false }
