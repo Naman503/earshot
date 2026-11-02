@@ -130,3 +130,31 @@ final class NotificationTests: XCTestCase {
         XCTAssertFalse(inQuietHours(5, start: 0, end: 0))
     }
 }
+
+final class AutoReadTests: XCTestCase {
+    func testInsertionIsFoundAsWholeLines() {
+        let old = "Chat\nYou: hi\nInput box"
+        let new = "Chat\nYou: hi\nBot: Hello there, how can I help?\nInput box"
+        XCTAssertEqual(TextDiff.change(from: old, to: new), .inserted("Bot: Hello there, how can I help?"))
+    }
+
+    func testNewPageAndNoChange() {
+        XCTAssertEqual(TextDiff.change(from: "a b c", to: "a b c"), .none)
+        XCTAssertEqual(TextDiff.change(from: String(repeating: "old page ", count: 20), to: String(repeating: "new site ", count: 20)), .replaced)
+        XCTAssertEqual(TextDiff.change(from: "keep this text and that", to: "keep this text"), .none)
+    }
+
+    func testSpeakableDropsTypedTextAndChrome() {
+        let inserted = "what is a tap\nA tap is a quick touch.\nCopy\n2:31 PM"
+        XCTAssertEqual(TextDiff.speakable(inserted, typed: "what is a tap"), "A tap is a quick touch.")
+        XCTAssertNil(TextDiff.speakable("Copy\nShare", typed: nil))
+    }
+
+    func testRulesPickMostSpecific() {
+        let rules = AutoReadRule.defaults.map { r -> AutoReadRule in var r = r; r.enabled = true; return r }
+        XCTAssertEqual(AutoReadRule.match(rules, host: "gemini.google.com", app: "Brave")?.pattern, "gemini.google.com")
+        XCTAssertEqual(AutoReadRule.match(rules, host: "www.google.com", app: "Brave")?.pattern, "google.com")
+        XCTAssertNil(AutoReadRule.match(rules, host: "notgoogle.com", app: "Brave"))
+        XCTAssertTrue(AutoReadRule(pattern: "app:WhatsApp", enabled: true, newContent: true, newPage: .nothing).matches(host: nil, app: "whatsapp"))
+    }
+}

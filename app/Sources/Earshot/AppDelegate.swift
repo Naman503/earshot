@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private(set) var reader: Reader!
     private(set) var announcer: Announcer!
     let notifications = NotificationWatcher()
+    private(set) var pageWatcher: PageWatcher!
     private var hud: HUD!
     private var statusItem: NSStatusItem!
     private var settingsWindow: NSWindow?
@@ -27,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hud = HUD(reader: reader, settings: settings)
         announcer = Announcer(settings: settings, reader: reader)
         notifications.onBanner = { [weak self] in self?.announcer.handle($0) }
+        pageWatcher = PageWatcher(settings: settings, reader: reader, grabber: grabber)
         Log.write("launch \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") ?? "") accessibility=\(AXIsProcessTrusted())")
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -84,6 +86,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         notifications.start()
+        pageWatcher.start()
         handleDebugArguments()
         if !AXIsProcessTrusted() { openSettings(tab: .general) }
     }
@@ -118,6 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .stop: if !announcer.dismissPending() { reader.stop() }
         case .readNotification: announcer.readLatestOrAnswer()
         case .summarize: summarize()
+        case .autoReadToggle: pageWatcher.togglePin()
         case .nextSentence: reader.skip(1)
         case .previousSentence: reader.skip(-1)
         case .faster: reader.changeSpeed(by: 0.1)
@@ -207,9 +211,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.addItem(withTitle: status, action: nil, keyEquivalent: "").isEnabled = false
         menu.addItem(.separator())
-        for action: ReadAction in [.smartRead, .fromHere, .window] {
+        for action: ReadAction in [.smartRead, .fromHere, .window, .summarize] {
             add(menu, action.title, action)
         }
+        add(menu, pageWatcher.pinnedTitle.map { "Stop auto-reading “\($0.prefix(40))”" } ?? "Auto-read new text on this page", .autoReadToggle)
         if reader.isActive {
             menu.addItem(.separator())
             add(menu, reader.state == .paused ? "Resume" : "Pause", .pauseResume)
@@ -288,7 +293,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         settingsWindow?.contentView = NSHostingView(rootView: SettingsView(initialTab: tab)
             .environmentObject(settings).environmentObject(kokoro).environmentObject(audio).environmentObject(reader)
-            .environmentObject(announcer))
+            .environmentObject(announcer).environmentObject(pageWatcher))
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
     }
@@ -321,6 +326,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     Task {
                         let s = await Summarizer.summarizePage(text) { d, n in Log.write("summarize-app: part \(d)/\(n)") }
                         Log.write("summarize-app: \(Int(Date().timeIntervalSince(t0) * 1000)) ms →\n\(s ?? "nil")")
+                    }
+                }
+            case "--watch-probe":
+                // URL + cost of fetching the whole page text, for auto-read tuning.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    for _ in 0..<3 {
+                        let t0 = Date()
+                        let info = self.grabber.pageInfo(inApp: value)
+                        Log.write("watch-probe: url=\(info?.url ?? "nil") chars=\(info?.text.count ?? -1) in \(Int(Date().timeIntervalSince(t0) * 1000)) ms")
                     }
                 }
             case "--settings":

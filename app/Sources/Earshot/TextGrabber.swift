@@ -19,6 +19,7 @@ enum GrabUnit: String { case sentence, paragraph, fromHere, window, selection }
 final class TextGrabber {
     private let system = AXUIElementCreateSystemWide()
     private var enabledPIDs = Set<pid_t>()
+    private let lock = NSLock()
     private let maxChars = 60_000
 
     init() {
@@ -84,8 +85,7 @@ final class TextGrabber {
     /// Called ahead of time for running apps so the first tap is already fast.
     @discardableResult
     func enableWebAccessibility(pid: pid_t) -> Bool {
-        guard pid > 0, !enabledPIDs.contains(pid) else { return false }
-        enabledPIDs.insert(pid)
+        guard pid > 0, lock.withLock({ enabledPIDs.insert(pid).inserted }) else { return false }
         let app = AXUIElementCreateApplication(pid)
         let r = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
         return r == .success
@@ -263,8 +263,83 @@ final class TextGrabber {
         return lines.joined(separator: "\n")
     }
 
+    /// What auto-read compares from one second to the next.
+    struct PageSnapshot {
+        var app: String
+        var windowID: Int
+        var url: String?
+        var title: String
+        var text: String
+        /// Text in the app's focused input field (so the user's own typing isn't read).
+        var typed: String?
+
+        var host: String? { url.flatMap { URL(string: $0)?.host } }
+        /// Identifies "the same page": URL without fragment, else the window title.
+        var key: String {
+            guard let url, var c = URLComponents(string: url) else { return "\(app)|\(windowID)|\(title)" }
+            c.fragment = nil
+            return "\(app)|\(c.string ?? url)"
+        }
+    }
+
+    private var webAreaCache: [Int: AXUIElement] = [:]
+
+    /// Text of a window: its main web area via text markers, else its
+    /// accessibility tree. `window` nil means the app's focused window.
+    func pageSnapshot(pid: pid_t, window: AXUIElement? = nil) -> PageSnapshot? {
+        let root = AXUIElementCreateApplication(pid)
+        guard let win = window ?? attrElement(root, kAXFocusedWindowAttribute) else { return nil }
+        let windowID = Int(CFHash(win))
+        let appName = NSRunningApplication(processIdentifier: pid)?.localizedName ?? "?"
+        let title = string(win, kAXTitleAttribute) ?? ""
+        var focused: CFTypeRef?
+        AXUIElementCopyAttributeValue(root, kAXFocusedUIElementAttribute as CFString, &focused)
+        let typed = focused.flatMap { f -> String? in
+            let el = f as! AXUIElement
+            guard ["AXTextArea", "AXTextField", "AXComboBox", "AXSearchField"].contains(role(el) ?? "") else { return nil }
+            return string(el, kAXValueAttribute).flatMap { $0.isEmpty ? nil : $0 }
+        }
+
+        var web = webAreaCache[windowID]
+        if web == nil || webText(web!) == nil {
+            web = largestWebArea(in: win)
+            webAreaCache[windowID] = web
+        }
+        if let web, let text = webText(web) {
+            let url = (attr(web, "AXURL") as? URL)?.absoluteString ?? attr(web, "AXURL") as? String
+            return PageSnapshot(app: appName, windowID: windowID, url: url, title: title, text: text, typed: typed)
+        }
+        return PageSnapshot(app: appName, windowID: windowID, url: nil, title: title,
+                            text: collectText(win, limit: 30_000), typed: typed)
+    }
+
+    private func webText(_ web: AXUIElement) -> String? {
+        guard let start = attr(web, "AXStartTextMarker"), let end = attr(web, "AXEndTextMarker") else { return nil }
+        return paramString(web, "AXStringForTextMarkerRange", AXTextMarkerRangeCreate(nil, start as! AXTextMarker, end as! AXTextMarker))
+    }
+
+    /// Apps like Claude wrap their content in an inner web area; take the one with the most text.
+    private func largestWebArea(in win: AXUIElement) -> AXUIElement? {
+        var best: (AXUIElement, Int)?
+        var queue = [win]
+        var visited = 0
+        while !queue.isEmpty, visited < 2500 {
+            let el = queue.removeFirst()
+            visited += 1
+            if role(el) == "AXWebArea" {
+                let n = webText(el)?.count ?? 0
+                if n > (best?.1 ?? -1) { best = (el, n) }
+                if n >= 200 { continue }  // a real page; don't look inside it
+            }
+            queue.append(contentsOf: children(el))
+        }
+        return best?.0
+    }
+
     /// Whole text of the web page in the named app's front window (for --summarize-app).
-    func pageText(inApp name: String) -> String? {
+    func pageText(inApp name: String) -> String? { pageInfo(inApp: name)?.text }
+
+    func pageInfo(inApp name: String) -> (text: String, url: String?)? {
         guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.localizedName == name }) else { return nil }
         enableWebAccessibility(pid: app.processIdentifier)
         let root = AXUIElementCreateApplication(app.processIdentifier)
@@ -276,7 +351,8 @@ final class TextGrabber {
             visited += 1
             if role(el) == "AXWebArea", let start = attr(el, "AXStartTextMarker"), let end = attr(el, "AXEndTextMarker") {
                 let range = AXTextMarkerRangeCreate(nil, start as! AXTextMarker, end as! AXTextMarker)
-                return paramString(el, "AXStringForTextMarkerRange", range)
+                guard let text = paramString(el, "AXStringForTextMarkerRange", range) else { return nil }
+                return (text, (attr(el, "AXURL") as? URL)?.absoluteString ?? attr(el, "AXURL") as? String)
             }
             queue.append(contentsOf: children(el))
         }

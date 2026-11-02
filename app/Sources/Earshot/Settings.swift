@@ -53,6 +53,10 @@ final class Settings: ObservableObject {
     @Published var quietStart: Int { didSet { save("quietStart", quietStart) } }
     @Published var quietEnd: Int { didSet { save("quietEnd", quietEnd) } }
 
+    // Auto-read
+    @Published var autoReadEnabled: Bool { didSet { save("autoReadEnabled", autoReadEnabled) } }
+    @Published var autoReadRules: [AutoReadRule] { didSet { saveJSON("autoReadRules", autoReadRules) } }
+
     func mode(for app: String) -> NotificationMode { appModes[app] ?? notificationMode }
 
     struct GestureEntry: Codable { var gesture: TrackpadTap; var action: ReadAction }
@@ -71,6 +75,7 @@ final class Settings: ObservableObject {
             .slower: KeyCombo(keyCode: UInt32(kVK_DownArrow), modifiers: ctrlOpt),
             .readNotification: KeyCombo(keyCode: UInt32(kVK_ANSI_N), modifiers: ctrlOpt),
             .summarize: KeyCombo(keyCode: UInt32(kVK_ANSI_G), modifiers: ctrlOpt),
+            .autoReadToggle: KeyCombo(keyCode: UInt32(kVK_ANSI_L), modifiers: ctrlOpt),
         ]
     }()
 
@@ -112,6 +117,8 @@ final class Settings: ObservableObject {
         quietHours = d.object(forKey: "quietHours") as? Bool ?? false
         quietStart = d.object(forKey: "quietStart") as? Int ?? 22
         quietEnd = d.object(forKey: "quietEnd") as? Int ?? 8
+        autoReadEnabled = d.object(forKey: "autoReadEnabled") as? Bool ?? true
+        autoReadRules = Self.loadJSON("autoReadRules", from: d) ?? AutoReadRule.defaults
         var loaded: [ReadAction: KeyCombo] = Self.loadJSON("shortcuts", from: d) ?? Self.defaultShortcuts
         // Shortcuts added in later versions get their defaults.
         for (action, combo) in Self.defaultShortcuts where loaded[action] == nil && !loaded.values.contains(combo) {

@@ -4,7 +4,7 @@ import ServiceManagement
 import SwiftUI
 
 enum SettingsTab: String, CaseIterable {
-    case voice, notifications, output, media, shortcuts, gestures, reading, general
+    case voice, notifications, autoRead, output, media, shortcuts, gestures, reading, general
 }
 
 struct SettingsView: View {
@@ -14,6 +14,7 @@ struct SettingsView: View {
         TabView(selection: $initialTab) {
             VoiceTab().tabItem { Label("Voice", systemImage: "waveform") }.tag(SettingsTab.voice)
             NotificationsTab().tabItem { Label("Notifications", systemImage: "bell.badge") }.tag(SettingsTab.notifications)
+            AutoReadTab().tabItem { Label("Auto-read", systemImage: "text.badge.plus") }.tag(SettingsTab.autoRead)
             OutputTab().tabItem { Label("Output", systemImage: "headphones") }.tag(SettingsTab.output)
             MediaTab().tabItem { Label("Media", systemImage: "play.rectangle") }.tag(SettingsTab.media)
             ShortcutsTab().tabItem { Label("Shortcuts", systemImage: "keyboard") }.tag(SettingsTab.shortcuts)
@@ -22,7 +23,7 @@ struct SettingsView: View {
             GeneralTab().tabItem { Label("General", systemImage: "gearshape") }.tag(SettingsTab.general)
         }
         .padding(20)
-        .frame(width: 700, height: 560)
+        .frame(width: 760, height: 580)
     }
 }
 
@@ -187,6 +188,72 @@ private struct NotificationsTab: View {
     }
 
     static func hour(_ h: Int) -> String { h == 0 ? "12 am" : h < 12 ? "\(h) am" : h == 12 ? "12 pm" : "\(h - 12) pm" }
+}
+
+// MARK: Auto-read
+
+private struct AutoReadTab: View {
+    @EnvironmentObject var settings: Settings
+    @EnvironmentObject var watcher: PageWatcher
+    @State private var newPattern = ""
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Auto-read on these sites and apps", isOn: $settings.autoReadEnabled)
+                Text("Earshot checks the page you're looking at once a second. When new text appears and stops changing — a chat reply, a new message, a search answer — it reads just the new part. Your own typing is never read.")
+                    .font(.caption).foregroundStyle(.secondary)
+                LabeledContent("Any other page") {
+                    Text("Press \(settings.shortcuts[.autoReadToggle].map(HotKeys.describe) ?? "the auto-read shortcut") to auto-read it until you press it again")
+                        .foregroundStyle(.secondary)
+                }
+                if let pinned = watcher.pinnedTitle {
+                    LabeledContent("Auto-reading now") { Text(pinned).lineLimit(1) }
+                }
+            }
+            Section("Rules") {
+                ForEach($settings.autoReadRules) { $rule in
+                    HStack(spacing: 10) {
+                        Toggle("", isOn: $rule.enabled).labelsHidden()
+                        Text(rule.pattern.hasPrefix("app:") ? "\(rule.pattern.dropFirst(4)) (app)" : rule.pattern)
+                            .frame(width: 150, alignment: .leading)
+                        Toggle("New text", isOn: $rule.newContent)
+                        Picker("New page", selection: $rule.newPage) {
+                            ForEach(NewPageAction.allCases, id: \.self) { Text($0.title).tag($0) }
+                        }
+                        .frame(maxWidth: 300)
+                        Button {
+                            settings.autoReadRules.removeAll { $0.pattern == rule.pattern }
+                        } label: { Image(systemName: "minus.circle") }
+                        .buttonStyle(.borderless)
+                    }
+                    .disabled(!settings.autoReadEnabled)
+                }
+                HStack {
+                    TextField("example.com, or app:WhatsApp", text: $newPattern)
+                        .onSubmit(add)
+                    Button("Add", action: add).disabled(newPattern.trimmingCharacters(in: .whitespaces).isEmpty)
+                    if let host = watcher.lastHost, !settings.autoReadRules.contains(where: { $0.pattern == host }) {
+                        Button("Add \(host)") { newPattern = host; add() }
+                    }
+                }
+                Text("“New page” is for search engines: when a results page finishes loading, read its top answer or a summary.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func add() {
+        var p = newPattern.trimmingCharacters(in: .whitespaces).lowercased()
+        if !p.hasPrefix("app:"), let host = URL(string: p.contains("://") ? p : "https://" + p)?.host { p = host }
+        if p.hasPrefix("www.") { p.removeFirst(4) }
+        guard !p.isEmpty, !settings.autoReadRules.contains(where: { $0.pattern == p }) else { return }
+        // Keep app names' capitalization as typed.
+        if newPattern.lowercased().hasPrefix("app:") { p = "app:" + newPattern.trimmingCharacters(in: .whitespaces).dropFirst(4) }
+        settings.autoReadRules.append(AutoReadRule(pattern: p, enabled: true, newContent: true, newPage: .nothing))
+        newPattern = ""
+    }
 }
 
 // MARK: Output
