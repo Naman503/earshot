@@ -64,8 +64,12 @@ final class Dictation: ObservableObject {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized: break
         case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .audio) { _ in }
-            reader.flash("Allow the microphone, then try again")
+            // Ask, and start listening the moment it's allowed.
+            AVCaptureDevice.requestAccess(for: .audio) { ok in
+                DispatchQueue.main.async { [weak self] in
+                    if ok { self?.start() } else { self?.reader.flash("Dictation needs the microphone") }
+                }
+            }
             return
         default:
             reader.flash("Earshot needs microphone access (System Settings → Privacy)")

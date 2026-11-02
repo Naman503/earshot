@@ -1,30 +1,171 @@
 import AVFoundation
 import EarshotCore
 import ServiceManagement
+import Speech
 import SwiftUI
 
-enum SettingsTab: String, CaseIterable {
-    case voice, dictation, notifications, autoRead, output, media, shortcuts, gestures, reading, general
+enum SettingsTab: String, CaseIterable, Identifiable {
+    case howTo, general, voice, reading, gestures, shortcuts, dictation, notifications, autoRead, output, media
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .howTo: "How to use"
+        case .general: "General"
+        case .voice: "Voice & speed"
+        case .reading: "Reading"
+        case .gestures: "Trackpad gestures"
+        case .shortcuts: "Keyboard shortcuts"
+        case .dictation: "Dictation"
+        case .notifications: "Notifications"
+        case .autoRead: "Auto-read"
+        case .output: "Headphones & output"
+        case .media: "Other audio"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .howTo: "questionmark.circle"
+        case .general: "gearshape"
+        case .voice: "waveform"
+        case .reading: "text.alignleft"
+        case .gestures: "hand.tap"
+        case .shortcuts: "keyboard"
+        case .dictation: "mic"
+        case .notifications: "bell.badge"
+        case .autoRead: "text.badge.plus"
+        case .output: "headphones"
+        case .media: "speaker.wave.2"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .howTo: "Every gesture and shortcut at a glance"
+        case .general: "Permissions, start at login, engine status"
+        case .voice: "Voice, speed and loudness"
+        case .reading: "How much a tap reads, what to skip, pronunciations, calls"
+        case .gestures: "What each multi-finger tap does"
+        case .shortcuts: "Change any keyboard shortcut"
+        case .dictation: "Speech to text, typed where your cursor is"
+        case .notifications: "Which notifications are read and how"
+        case .autoRead: "Read new text on chosen sites and apps"
+        case .output: "Only speak into headphones, and which ones"
+        case .media: "Turn videos and music down while reading"
+        }
+    }
+}
+
+/// Which page the settings window shows (shared so menu items and debug tools can switch it).
+@MainActor
+final class SettingsNavigation: ObservableObject {
+    static let shared = SettingsNavigation()
+    @Published var tab: SettingsTab = .howTo
 }
 
 struct SettingsView: View {
-    @State var initialTab: SettingsTab
+    @ObservedObject private var nav = SettingsNavigation.shared
 
     var body: some View {
-        TabView(selection: $initialTab) {
-            VoiceTab().tabItem { Label("Voice", systemImage: "waveform") }.tag(SettingsTab.voice)
-            DictationTab().tabItem { Label("Dictation", systemImage: "mic") }.tag(SettingsTab.dictation)
-            NotificationsTab().tabItem { Label("Notifications", systemImage: "bell.badge") }.tag(SettingsTab.notifications)
-            AutoReadTab().tabItem { Label("Auto-read", systemImage: "text.badge.plus") }.tag(SettingsTab.autoRead)
-            OutputTab().tabItem { Label("Output", systemImage: "headphones") }.tag(SettingsTab.output)
-            MediaTab().tabItem { Label("Media", systemImage: "play.rectangle") }.tag(SettingsTab.media)
-            ShortcutsTab().tabItem { Label("Shortcuts", systemImage: "keyboard") }.tag(SettingsTab.shortcuts)
-            GesturesTab().tabItem { Label("Gestures", systemImage: "hand.tap") }.tag(SettingsTab.gestures)
-            ReadingTab().tabItem { Label("Reading", systemImage: "text.alignleft") }.tag(SettingsTab.reading)
-            GeneralTab().tabItem { Label("General", systemImage: "gearshape") }.tag(SettingsTab.general)
+        NavigationSplitView {
+            List(SettingsTab.allCases, selection: Binding(get: { nav.tab }, set: { if let t = $0 { nav.tab = t } })) { tab in
+                Label(tab.title, systemImage: tab.icon).tag(tab)
+            }
+            .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 260)
+        } detail: {
+            VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(nav.tab.title).font(.title2.weight(.semibold))
+                    Text(nav.tab.detail).foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 24)
+                .padding(.top, 18)
+                .padding(.bottom, 4)
+                page(nav.tab)
+            }
+            .frame(minWidth: 560, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .padding(20)
-        .frame(width: 760, height: 580)
+        .frame(minWidth: 820, minHeight: 600)
+    }
+
+    @ViewBuilder private func page(_ tab: SettingsTab) -> some View {
+        switch tab {
+        case .howTo: HowToTab()
+        case .general: GeneralTab()
+        case .voice: VoiceTab()
+        case .reading: ReadingTab()
+        case .gestures: GesturesTab()
+        case .shortcuts: ShortcutsTab()
+        case .dictation: DictationTab()
+        case .notifications: NotificationsTab()
+        case .autoRead: AutoReadTab()
+        case .output: OutputTab()
+        case .media: MediaTab()
+        }
+    }
+}
+
+// MARK: How to use
+
+private struct HowToTab: View {
+    @EnvironmentObject var settings: Settings
+
+    var body: some View {
+        Form {
+            Section("Reading") {
+                row(.paragraph, "Point at text and tap with four fingers. Tap on selected text to read just the selection.")
+                row(.fromHere, "Reads from the pointer to the end of the page.")
+                row(.section, "Reads from the heading above the pointer to the next heading.")
+                row(.visible, "Reads everything currently on screen.")
+                row(.smartRead, "The selection, or else the paragraph under the pointer.")
+                row(.summarize, "A short spoken summary, then asks if you want the rest.")
+                row(.window, nil)
+                row(.clipboard, nil)
+                row(.readAgain, nil)
+            }
+            Section("While it's reading") {
+                row(.pauseResume, nil)
+                row(.stop, "Esc also stops, only while something is being read.")
+                row(.nextSentence, nil)
+                row(.previousSentence, nil)
+                row(.nextParagraph, nil)
+                row(.previousParagraph, nil)
+                row(.faster, nil)
+                row(.slower, nil)
+            }
+            Section("Dictation") {
+                row(.dictate, "Hold the keys and talk, then let go. Or tap once to start and once to stop. Words are typed wherever your cursor is. Esc cancels.")
+            }
+            Section("Notifications and pages") {
+                row(.readNotification, "When it asks “Read it?”, this — or a four-finger tap, or saying “yes” — reads it.")
+                row(.autoReadToggle, "Keeps reading new text on this page as it appears.")
+            }
+            Section {
+                Text("Everything here can be changed under Keyboard shortcuts and Trackpad gestures.")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func row(_ action: ReadAction, _ hint: String?) -> some View {
+        let gestures = settings.gestures.filter { $0.value == action }.keys.sorted().map(\.label)
+        return HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(action.title)
+                if let hint { Text(hint).font(.caption).foregroundStyle(.secondary) }
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 2) {
+                if let combo = settings.shortcuts[action] {
+                    Text(HotKeys.describe(combo)).font(.system(.body, design: .rounded).weight(.medium))
+                        .padding(.horizontal, 8).padding(.vertical, 2)
+                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 5))
+                }
+                ForEach(gestures, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
+            }
+        }
     }
 }
 
@@ -453,7 +594,7 @@ struct ShortcutRecorder: View {
     @State private var monitor: Any?
 
     var body: some View {
-        Button(recording ? "Press keys…" : combo.map(HotKeys.describe) ?? "Record") {
+        Button(recording ? "Press keys…" : combo.map(HotKeys.describe) ?? "Set…") {
             recording ? end() : begin()
         }
         .frame(minWidth: 110)
@@ -495,28 +636,12 @@ private struct GesturesTab: View {
     var body: some View {
         Form {
             Toggle("Trackpad gestures", isOn: $settings.gesturesEnabled)
-            Section {
-                Picker("Paragraphs above", selection: $settings.paragraphsBefore) {
-                    Text("None").tag(0)
-                    ForEach(1...10, id: \.self) { Text("\($0)").tag($0) }
-                }
-                Picker("Paragraphs below", selection: $settings.paragraphsAfter) {
-                    Text("None").tag(0)
-                    ForEach(1...10, id: \.self) { Text("\($0)").tag($0) }
-                    Text("To the end").tag(-1)
-                }
-                Toggle("If text is selected, a tap reads the selection", isOn: $settings.tapReadsSelection)
-            } header: {
-                Text("How much “Read paragraph” reads")
-            } footer: {
-                Text("Applies to the paragraph tap and shortcut. Headings and short lines in between come along but don't count. For other amounts, give a gesture “Read the whole section”, “Read from pointer to the end” or “Read everything visible on screen”.")
-                    .font(.caption)
-            }
+
             Section {
                 ForEach(TrackpadTap.all, id: \.self) { g in
                     Picker(g.label, selection: Binding(
-                        get: { settings.gestures[g] ?? .none },
-                        set: { settings.gestures[g] = $0 == .none ? nil : $0 })) {
+                        get: { settings.gestures[g] ?? ReadAction.none },
+                        set: { (new: ReadAction) in settings.gestures[g] = new == ReadAction.none ? nil : new })) {
                         ForEach(ReadAction.allCases) { Text($0.title).tag($0) }
                     }
                 }
@@ -538,6 +663,23 @@ private struct ReadingTab: View {
 
     var body: some View {
         Form {
+            Section {
+                Picker("Paragraphs above", selection: $settings.paragraphsBefore) {
+                    Text("None").tag(0)
+                    ForEach(1...10, id: \.self) { Text("\($0)").tag($0) }
+                }
+                Picker("Paragraphs below", selection: $settings.paragraphsAfter) {
+                    Text("None").tag(0)
+                    ForEach(1...10, id: \.self) { Text("\($0)").tag($0) }
+                    Text("To the end").tag(-1)
+                }
+                Toggle("If text is selected, a tap reads the selection", isOn: $settings.tapReadsSelection)
+            } header: {
+                Text("How much “Read paragraph” reads")
+            } footer: {
+                Text("Applies to “Read paragraph” from a tap or shortcut. Headings and short lines in between come along but don't count. For other amounts, give a gesture “Read the whole section”, “Read from pointer to the end” or “Read everything visible on screen” under Trackpad gestures.")
+                    .font(.caption)
+            }
             Section("Skip while reading") {
                 Toggle("Web addresses (URLs)", isOn: $settings.skipURLs)
                 Toggle("Citation marks like [12]", isOn: $settings.skipCitations)
@@ -601,7 +743,10 @@ private struct PronunciationsSection: View {
 
 private struct GeneralTab: View {
     @ObservedObject private var permissions = Permissions.shared
+    @EnvironmentObject var kokoro: KokoroEngine
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @State private var mic = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+    @State private var speech = SFSpeechRecognizer.authorizationStatus() == .authorized
 
     var body: some View {
         Form {
@@ -612,6 +757,31 @@ private struct GeneralTab: View {
                 row("Screen Recording", "Optional: reads text in images, PDFs and apps that don't expose it.", permissions.screenRecording) {
                     permissions.requestScreenRecording()
                 }
+                row("Microphone", "For dictation and answering “Read it?” by voice.", mic) {
+                    AVCaptureDevice.requestAccess(for: .audio) { ok in DispatchQueue.main.async { mic = ok } }
+                }
+                row("Speech recognition", "For answering “Read it?” by voice (on this Mac).", speech) {
+                    SFSpeechRecognizer.requestAuthorization { s in DispatchQueue.main.async { speech = s == .authorized } }
+                }
+                LabeledContent {
+                    Text("macOS asks the first time other audio is turned down").foregroundStyle(.secondary)
+                } label: {
+                    VStack(alignment: .leading) {
+                        Text("System audio")
+                        Text("For turning videos and music down while reading.").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            Section("Voice engine") {
+                LabeledContent("Kokoro voice and Parakeet dictation") {
+                    switch kokoro.status {
+                    case .ready: Label("Running", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                    case .starting: Label("Starting…", systemImage: "hourglass").foregroundStyle(.secondary)
+                    case .notInstalled: Text("Not installed — run scripts/install-engine.sh").foregroundStyle(.orange)
+                    case .failed(let m): Text(m).foregroundStyle(.red)
+                    }
+                }
+                Text("Runs entirely on this Mac. Nothing you read, hear or dictate leaves it.").font(.caption).foregroundStyle(.secondary)
             }
             Toggle("Open at login", isOn: $launchAtLogin)
                 .onChange(of: launchAtLogin) { _, on in

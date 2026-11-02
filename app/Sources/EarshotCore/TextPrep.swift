@@ -16,6 +16,8 @@ public enum TextPrep {
         // Web pages mark embedded objects (links, images, buttons) with U+FFFC;
         // treat them as breaks so menus don't run into the article.
         var s = text.replacingOccurrences(of: "\u{FFFC}", with: "\n")
+        // Screen-reader labels chat apps put before each message.
+        s = s.replacingOccurrences(of: #"(?m)^\s*(Claude|ChatGPT|Gemini|Copilot|You) (responded|said|wrote):\s*"#, with: "", options: .regularExpression)
         if options.skipURLs {
             s = s.replacingOccurrences(of: #"https?://\S+|www\.\S+"#, with: " ", options: .regularExpression)
         }

@@ -29,6 +29,10 @@ final class TextPrepTests: XCTestCase {
         XCTAssertEqual(TextPrep.dropPreamble("The vote passed."), "The vote passed.")
     }
 
+    func testChatLabelsAreDropped() {
+        XCTAssertEqual(TextPrep.clean("Claude responded: Good news.\nYou said: hi"), "Good news.\nhi")
+    }
+
     func testSectionsRespectSize() {
         let text = (1...10).map { "Paragraph \($0) " + String(repeating: "x", count: 40) }.joined(separator: "\n")
         let parts = TextPrep.sections(text, size: 120)

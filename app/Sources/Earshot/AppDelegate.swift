@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import ScreenCaptureKit
 import EarshotCore
 import SwiftUI
 
@@ -263,6 +264,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for action: ReadAction in [.smartRead, .section, .fromHere, .visible, .window, .summarize] {
             add(menu, action.title, action)
         }
+        add(menu, dictation.state == .listening ? "Stop dictation" : "Start dictation", .dictate)
         add(menu, pageWatcher.pinnedTitle.map { "Stop auto-reading “\($0.prefix(40))”" } ?? "Auto-read new text on this page", .autoReadToggle)
         if reader.isActive {
             menu.addItem(.separator())
@@ -347,22 +349,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let s = item.representedObject as? Double { settings.speed = s }
     }
 
-    @objc private func openSettingsMenu() { openSettings(tab: .voice) }
+    @objc private func openSettingsMenu() { openSettings(tab: .howTo) }
 
     func openSettings(tab: SettingsTab) {
+        SettingsNavigation.shared.tab = tab
         if settingsWindow == nil {
-            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 560),
-                             styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 920, height: 680),
+                             styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                             backing: .buffered, defer: false)
             w.title = "Earshot Settings"
             w.isReleasedWhenClosed = false
+            w.contentView = NSHostingView(rootView: SettingsView()
+                .environmentObject(settings).environmentObject(kokoro).environmentObject(audio).environmentObject(reader)
+                .environmentObject(announcer).environmentObject(pageWatcher).environmentObject(dictation))
+            w.setContentSize(NSSize(width: 920, height: 680))
             w.center()
             settingsWindow = w
         }
-        settingsWindow?.contentView = NSHostingView(rootView: SettingsView(initialTab: tab)
-            .environmentObject(settings).environmentObject(kokoro).environmentObject(audio).environmentObject(reader)
-            .environmentObject(announcer).environmentObject(pageWatcher).environmentObject(dictation))
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Saves a PNG of every settings page (for checking the layout).
+    private func renderSettings(to dir: String) {
+        openSettings(tab: .howTo)
+        let tabs = SettingsTab.allCases
+        func shoot(_ i: Int) {
+            guard i < tabs.count else { Log.write("render-settings: done"); return }
+            SettingsNavigation.shared.tab = tabs[i]
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                guard let window = self.settingsWindow else { return }
+                let url = URL(fileURLWithPath: "\(dir)/\(i)-\(tabs[i].rawValue).png")
+                Task {
+                    // The real on-screen pixels (needs Screen Recording), else an offscreen render.
+                    if let content = try? await SCShareableContent.current,
+                       let scw = content.windows.first(where: { $0.windowID == CGWindowID(window.windowNumber) }) {
+                        let config = SCStreamConfiguration()
+                        config.width = Int(scw.frame.width * 2)
+                        config.height = Int(scw.frame.height * 2)
+                        if let img = try? await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(desktopIndependentWindow: scw), configuration: config) {
+                            try? NSBitmapImageRep(cgImage: img).representation(using: .png, properties: [:])?.write(to: url)
+                            shoot(i + 1)
+                            return
+                        }
+                    }
+                    if let view = window.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                        view.cacheDisplay(in: view.bounds, to: rep)
+                        try? rep.representation(using: .png, properties: [:])?.write(to: url)
+                    }
+                    shoot(i + 1)
+                }
+            }
+        }
+        shoot(0)
     }
 
     // MARK: Debug
@@ -405,7 +444,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     }
                 }
             case "--settings":
-                openSettings(tab: SettingsTab(rawValue: value) ?? .voice)
+                openSettings(tab: SettingsTab(rawValue: value) ?? .howTo)
+            case "--render-settings":
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.renderSettings(to: value) }
             case "--say":
                 waitForEngine { self.reader.read(value, source: "--say") }
             case "--probe", "--probe-app":
