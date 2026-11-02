@@ -21,6 +21,7 @@ final class Reader: ObservableObject {
     private let kokoro: KokoroEngine
     private let apple = AppleEngine()
     private let media = MediaControl()
+    let ducker = Ducker()
 
     private var chunks: [String] = []
     private var index = 0
@@ -102,6 +103,7 @@ final class Reader: ObservableObject {
             flash("Couldn't start audio: \(error.localizedDescription)")
             return false
         }
+        quietOthers()
         deviceID = device.id
         readID += 1
         chunks = parts
@@ -134,7 +136,7 @@ final class Reader: ObservableObject {
         let interrupted = onInterrupt
         onInterrupt = nil
         total = 0
-        if resumeMedia { media.resumeOthers() }
+        if resumeMedia { restoreOthers() }
         setState(.idle)
         interrupted?()
     }
@@ -143,6 +145,7 @@ final class Reader: ObservableObject {
         switch state {
         case .speaking, .preparing:
             audio.player.pause()
+            ducker.release()
             setState(.paused)
         case .paused:
             guard let device = audio.target(settings: settings) else {
@@ -150,6 +153,7 @@ final class Reader: ObservableObject {
                 return
             }
             if device.id != deviceID { restartAt(index, on: device) } else { audio.player.play() }
+            quietOthers()
             pausedByRoute = false
             setState(scheduled.isEmpty ? .preparing : .speaking)
         case .idle:
@@ -318,7 +322,18 @@ final class Reader: ObservableObject {
     func clearNotice() { notice = nil }
 
     /// Resumes media paused for a chain of readings (announcement → answer → body).
-    func resumeMedia() { media.resumeOthers() }
+    func resumeMedia() { restoreOthers() }
+
+    /// Ducks (or, if that isn't possible, pauses) other audio per the media setting.
+    private func quietOthers() {
+        guard settings.mediaPolicy == .duck else { return }
+        if !ducker.duck(to: settings.duckLevel), !media.hasPaused { media.pauseOthers() }
+    }
+
+    private func restoreOthers() {
+        ducker.release()
+        media.resumeOthers()
+    }
 
     func flash(_ message: String) {
         notice = message

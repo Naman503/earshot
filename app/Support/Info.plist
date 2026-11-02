@@ -22,6 +22,8 @@
 	<string>15.0</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Earshot turns other apps down while it reads to you, then back up.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Earshot listens for a few seconds after asking "Read it?" so you can answer yes or no by voice.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

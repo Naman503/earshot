@@ -248,8 +248,23 @@ private struct MediaTab: View {
                 ForEach(MediaPolicy.allCases, id: \.self) { Text($0.title).tag($0) }
             }
             .pickerStyle(.radioGroup)
-            Text("Earshot presses the system play/pause key, which YouTube in your browser, Spotify, Music and most players follow. It only resumes what it paused.")
-                .font(.caption).foregroundStyle(.secondary)
+            if settings.mediaPolicy == .duck {
+                LabeledContent("Turn others down to") {
+                    HStack {
+                        Slider(value: $settings.duckLevel, in: 0...0.6, step: 0.05)
+                        Text("\(Int(settings.duckLevel * 100))%").monospacedDigit().frame(width: 44)
+                    }
+                }
+                Text("Works for every app, including videos in your browser. macOS asks once for permission to \"record this computer's audio\": Earshot needs that to turn other apps down, and nothing is recorded or saved. If you say no, Earshot pauses instead.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("Try it: play a video, then click here") {
+                    AppDelegate.shared.reader.ducker.resetAvailability()
+                    AppDelegate.shared.reader.read("Your video should be quieter while I'm talking, and come back up as soon as I finish this sentence.", source: "duck test")
+                }
+            } else {
+                Text("Earshot presses the system play/pause key, which YouTube in your browser, Spotify, Music and most players follow. It only resumes what it paused.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Playing right now") {
                 if playing.isEmpty {
                     Text("Nothing").foregroundStyle(.secondary)

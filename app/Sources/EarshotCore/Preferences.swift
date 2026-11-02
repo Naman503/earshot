@@ -51,10 +51,11 @@ public enum OutputPolicy: String, CaseIterable, Codable, Sendable {
 
 /// What to do with other audio (videos, music) while reading.
 public enum MediaPolicy: String, CaseIterable, Codable, Sendable {
-    case pauseAndResume, keepPlaying
+    case duck, pauseAndResume, keepPlaying
 
     public var title: String {
         switch self {
+        case .duck: "Turn it down while reading, back up after"
         case .pauseAndResume: "Pause it, resume when done"
         case .keepPlaying: "Keep playing"
         }

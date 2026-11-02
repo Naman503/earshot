@@ -28,6 +28,8 @@ final class Settings: ObservableObject {
     @Published var outputPolicy: OutputPolicy { didSet { save("outputPolicy", outputPolicy.rawValue) } }
     @Published var allowedDeviceUIDs: [String] { didSet { save("allowedDeviceUIDs", allowedDeviceUIDs) } }
     @Published var mediaPolicy: MediaPolicy { didSet { save("mediaPolicy", mediaPolicy.rawValue) } }
+    /// How loud other audio stays while ducked (0…1).
+    @Published var duckLevel: Double { didSet { save("duckLevel", duckLevel) } }
     /// Pause reading (instead of stopping) when headphones disconnect mid-read.
     @Published var pauseOnDisconnect: Bool { didSet { save("pauseOnDisconnect", pauseOnDisconnect) } }
 
@@ -91,7 +93,8 @@ final class Settings: ObservableObject {
         showHUD = d.object(forKey: "showHUD") as? Bool ?? true
         outputPolicy = OutputPolicy(rawValue: d.string(forKey: "outputPolicy") ?? "") ?? .headphonesOnly
         allowedDeviceUIDs = d.stringArray(forKey: "allowedDeviceUIDs") ?? []
-        mediaPolicy = MediaPolicy(rawValue: d.string(forKey: "mediaPolicy") ?? "") ?? .pauseAndResume
+        mediaPolicy = MediaPolicy(rawValue: d.string(forKey: "mediaPolicy") ?? "") ?? .duck
+        duckLevel = d.object(forKey: "duckLevel") as? Double ?? 0.2
         pauseOnDisconnect = d.object(forKey: "pauseOnDisconnect") as? Bool ?? true
         gesturesEnabled = d.object(forKey: "gesturesEnabled") as? Bool ?? true
         escapeStops = d.object(forKey: "escapeStops") as? Bool ?? true
