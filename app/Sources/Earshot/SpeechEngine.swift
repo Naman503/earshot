@@ -29,6 +29,7 @@ final class KokoroEngine: ObservableObject {
     private var buffer = Data()
     private var nextID = 1
     private var waiting: [Int: CheckedContinuation<SpeechAudio?, Never>] = [:]
+    private var transcripts: [Int: CheckedContinuation<String?, Never>] = [:]
     private var restarts = 0
     private var floor = 0
 
@@ -88,6 +89,8 @@ final class KokoroEngine: ObservableObject {
         process = nil
         for (_, c) in waiting { c.resume(returning: nil) }
         waiting.removeAll()
+        for (_, c) in transcripts { c.resume(returning: nil) }
+        transcripts.removeAll()
         guard restarts < 3 else { status = .failed("Engine keeps crashing; see ~/Library/Logs/Earshot"); return }
         restarts += 1
         status = .starting
@@ -115,6 +118,24 @@ final class KokoroEngine: ObservableObject {
         for key in waiting.keys where key < id {
             waiting.removeValue(forKey: key)?.resume(returning: nil)
         }
+    }
+
+    /// Speech to text: 16 kHz mono samples → text (nil if the engine isn't ready or fails).
+    func transcribe(_ samples: [Float], model: String, language: String) async -> String? {
+        guard status == .ready else { return nil }
+        let id = nextID
+        nextID += 1
+        let pcm = samples.map { Int16(max(-1, min(1, $0)) * 32767) }
+        let b64 = pcm.withUnsafeBufferPointer { Data(buffer: $0) }.base64EncodedString()
+        return await withCheckedContinuation { c in
+            transcripts[id] = c
+            send(["op": "transcribe", "id": id, "audio": b64, "model": model, "language": language])
+        }
+    }
+
+    /// Loads the dictation model in the background so the first dictation is fast.
+    func warmSpeechToText(model: String) {
+        send(["op": "warm_stt", "model": model])
     }
 
     /// Abandons every request made so far.
@@ -155,9 +176,15 @@ final class KokoroEngine: ObservableObject {
             guard let id = h["id"] as? Int, let c = waiting.removeValue(forKey: id) else { return }
             let samples = body.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
             c.resume(returning: SpeechAudio(samples: samples, sampleRate: h["sr"] as? Double ?? 24000))
+        case "transcript":
+            guard let id = h["id"] as? Int else { return }
+            transcripts.removeValue(forKey: id)?.resume(returning: h["text"] as? String)
         case "error":
             Log.write("engine error: \(h["message"] ?? "")")
-            if let id = h["id"] as? Int { waiting.removeValue(forKey: id)?.resume(returning: nil) }
+            if let id = h["id"] as? Int {
+                waiting.removeValue(forKey: id)?.resume(returning: nil)
+                transcripts.removeValue(forKey: id)?.resume(returning: nil)
+            }
         default:
             break
         }

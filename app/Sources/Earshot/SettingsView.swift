@@ -4,7 +4,7 @@ import ServiceManagement
 import SwiftUI
 
 enum SettingsTab: String, CaseIterable {
-    case voice, notifications, autoRead, output, media, shortcuts, gestures, reading, general
+    case voice, dictation, notifications, autoRead, output, media, shortcuts, gestures, reading, general
 }
 
 struct SettingsView: View {
@@ -13,6 +13,7 @@ struct SettingsView: View {
     var body: some View {
         TabView(selection: $initialTab) {
             VoiceTab().tabItem { Label("Voice", systemImage: "waveform") }.tag(SettingsTab.voice)
+            DictationTab().tabItem { Label("Dictation", systemImage: "mic") }.tag(SettingsTab.dictation)
             NotificationsTab().tabItem { Label("Notifications", systemImage: "bell.badge") }.tag(SettingsTab.notifications)
             AutoReadTab().tabItem { Label("Auto-read", systemImage: "text.badge.plus") }.tag(SettingsTab.autoRead)
             OutputTab().tabItem { Label("Output", systemImage: "headphones") }.tag(SettingsTab.output)
@@ -132,6 +133,51 @@ private struct VoiceTab: View {
     static func displayName(_ id: String) -> String {
         let name = id.split(separator: "_").dropFirst().joined(separator: " ").capitalized
         return id == "af_heart" ? "\(name) (default)" : name
+    }
+}
+
+// MARK: Dictation
+
+private struct DictationTab: View {
+    @EnvironmentObject var settings: Settings
+    @State private var micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+
+    var body: some View {
+        Form {
+            Toggle("Dictation", isOn: $settings.dictationEnabled)
+            Group {
+                LabeledContent("Shortcut") {
+                    Text(settings.shortcuts[.dictate].map(HotKeys.describe) ?? "None").foregroundStyle(.secondary)
+                }
+                Text("Hold the shortcut and talk, then let go — or tap it once to start and again to stop. Esc cancels. Your words are typed wherever the cursor is.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Picker("Recognizer", selection: $settings.dictationModel) {
+                    Text("Parakeet — English, fastest and most accurate").tag("parakeet")
+                    Text("Whisper — Hindi and mixed Hindi-English").tag("whisper")
+                }
+                if settings.dictationModel == "whisper" {
+                    Picker("Language", selection: $settings.dictationLanguage) {
+                        Text("English").tag("en")
+                        Text("Hindi").tag("hi")
+                        Text("Detect automatically").tag("")
+                    }
+                }
+                Toggle("Use the Mac's own microphone (keeps earbuds in full sound quality)", isOn: $settings.dictationBuiltInMic)
+                Toggle("Play a sound when listening starts and stops", isOn: $settings.dictationSounds)
+                if micStatus != .authorized {
+                    Button("Allow microphone…") {
+                        AVCaptureDevice.requestAccess(for: .audio) { ok in
+                            DispatchQueue.main.async { micStatus = ok ? .authorized : .denied }
+                        }
+                    }
+                }
+                Text("Runs entirely on this Mac: about 0.1 seconds to transcribe 15 seconds of speech on an M4.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .disabled(!settings.dictationEnabled)
+        }
+        .formStyle(.grouped)
+        .onAppear { micStatus = AVCaptureDevice.authorizationStatus(for: .audio) }
     }
 }
 

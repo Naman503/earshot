@@ -4,7 +4,7 @@ import Foundation
 public enum ReadAction: String, CaseIterable, Codable, Sendable, Identifiable {
     case smartRead, paragraph, sentence, fromHere, section, visible, selection, window
     case pauseResume, stop, nextSentence, previousSentence, faster, slower
-    case readNotification, summarize, autoReadToggle
+    case readNotification, summarize, autoReadToggle, dictate
     case none
 
     public var id: String { rawValue }
@@ -28,6 +28,7 @@ public enum ReadAction: String, CaseIterable, Codable, Sendable, Identifiable {
         case .readNotification: "Read the latest notification (or answer yes)"
         case .summarize: "Summarize the page (or selection), then offer to read it"
         case .autoReadToggle: "Auto-read new text on this page (on / off)"
+        case .dictate: "Dictate: hold to talk, or tap to start and stop"
         case .none: "Nothing"
         }
     }

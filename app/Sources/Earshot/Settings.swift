@@ -57,6 +57,15 @@ final class Settings: ObservableObject {
     @Published var autoReadEnabled: Bool { didSet { save("autoReadEnabled", autoReadEnabled) } }
     @Published var autoReadRules: [AutoReadRule] { didSet { saveJSON("autoReadRules", autoReadRules) } }
 
+    // Dictation
+    @Published var dictationEnabled: Bool { didSet { save("dictationEnabled", dictationEnabled) } }
+    /// "parakeet" (English, fastest) or "whisper" (Hindi and mixed languages).
+    @Published var dictationModel: String { didSet { save("dictationModel", dictationModel) } }
+    /// Whisper language code ("en", "hi") or "" for automatic.
+    @Published var dictationLanguage: String { didSet { save("dictationLanguage", dictationLanguage) } }
+    @Published var dictationBuiltInMic: Bool { didSet { save("dictationBuiltInMic", dictationBuiltInMic) } }
+    @Published var dictationSounds: Bool { didSet { save("dictationSounds", dictationSounds) } }
+
     func mode(for app: String) -> NotificationMode { appModes[app] ?? notificationMode }
 
     struct GestureEntry: Codable { var gesture: TrackpadTap; var action: ReadAction }
@@ -78,6 +87,7 @@ final class Settings: ObservableObject {
             .readNotification: KeyCombo(keyCode: UInt32(kVK_ANSI_N), modifiers: ctrlOpt),
             .summarize: KeyCombo(keyCode: UInt32(kVK_ANSI_G), modifiers: ctrlOpt),
             .autoReadToggle: KeyCombo(keyCode: UInt32(kVK_ANSI_L), modifiers: ctrlOpt),
+            .dictate: KeyCombo(keyCode: UInt32(kVK_ANSI_D), modifiers: ctrlOpt),
         ]
     }()
 
@@ -120,6 +130,11 @@ final class Settings: ObservableObject {
         quietStart = d.object(forKey: "quietStart") as? Int ?? 22
         quietEnd = d.object(forKey: "quietEnd") as? Int ?? 8
         autoReadEnabled = d.object(forKey: "autoReadEnabled") as? Bool ?? true
+        dictationEnabled = d.object(forKey: "dictationEnabled") as? Bool ?? true
+        dictationModel = d.string(forKey: "dictationModel") ?? "parakeet"
+        dictationLanguage = d.string(forKey: "dictationLanguage") ?? "en"
+        dictationBuiltInMic = d.object(forKey: "dictationBuiltInMic") as? Bool ?? true
+        dictationSounds = d.object(forKey: "dictationSounds") as? Bool ?? true
         autoReadRules = Self.loadJSON("autoReadRules", from: d) ?? AutoReadRule.defaults
         var loaded: [ReadAction: KeyCombo] = Self.loadJSON("shortcuts", from: d) ?? Self.defaultShortcuts
         // Shortcuts added in later versions get their defaults.

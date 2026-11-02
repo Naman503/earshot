@@ -12,6 +12,7 @@
 | Headphones only | Never speaks on the Mac speakers unless you allow it. Pauses when headphones disconnect, resumes when they're back. |
 | Notification announcer | "WhatsApp. Rahul. Read it?" — answer yes/no by voice, a four-finger tap or ⌃⌥N. Short messages are read straight away, long ones summarized on-device first (Apple Intelligence). Per-app rules and quiet hours. |
 | Gist first | A 3–5 sentence spoken summary of any page or selection from Apple's on-device model (long pages summarized section by section), then "Read the whole page?" — starting at the article, not the site menu. |
+| Dictation | Hold ⌃⌥D and talk (or tap to start/stop); your words are typed wherever the cursor is. NVIDIA Parakeet runs locally: ~0.1 s for 15 s of speech, word-perfect on our tests (Whisper turbo: 1 s, two errors). Whisper available for Hindi and mixed Hindi-English. |
 | Auto-read | New text on chosen sites or apps — a chat reply, a new message, a search answer — is read once it stops changing. ⌃⌥L pins any page. Your own typing is never read. |
 | Media aware | Turns every other app down while speaking (videos in your browser, Spotify, calls) and fades it back up — or pauses and resumes, if you prefer. Optional volume boost above 100%. |
 | Yours to tune | Every shortcut and gesture is rebindable; voice, speed, volume, output devices and text cleanup are in Settings. |
@@ -29,6 +30,8 @@
 | Stop | ⌃⌥S or Esc while reading | 5-finger tap |
 | Next / previous sentence | ⌃⌥→ / ⌃⌥← | |
 | Faster / slower | ⌃⌥↑ / ⌃⌥↓ | |
+| Dictate (hold to talk, or tap to start/stop) | ⌃⌥D | |
+| Auto-read new text on this page (on/off) | ⌃⌥L | |
 | Summarize the page (or selection), then offer to read it | ⌃⌥G | 4-finger triple-tap |
 | Read latest notification / answer "yes" | ⌃⌥N | 4-finger tap while it asks |
 

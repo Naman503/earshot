@@ -12,6 +12,8 @@ final class HotKeys {
     private static var actions: [UInt32: ReadAction] = [:]
     private static let escapeID: UInt32 = 999
     static var onAction: ((ReadAction) -> Void)?
+    /// Key released (for hold-to-talk dictation).
+    static var onRelease: ((ReadAction) -> Void)?
 
     func register(_ shortcuts: [ReadAction: KeyCombo]) {
         unregisterAll()
@@ -54,18 +56,21 @@ final class HotKeys {
 
     private func installHandler() {
         guard handler == nil else { return }
-        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        var specs = [EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
+                     EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased))]
         InstallEventHandler(GetApplicationEventTarget(), { _, event, _ in
             var id = EventHotKeyID()
             GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil,
                               MemoryLayout<EventHotKeyID>.size, nil, &id)
+            let released = GetEventKind(event) == UInt32(kEventHotKeyReleased)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    if let action = HotKeys.actions[id.id] { HotKeys.onAction?(action) }
+                    guard let action = HotKeys.actions[id.id] else { return }
+                    if released { HotKeys.onRelease?(action) } else { HotKeys.onAction?(action) }
                 }
             }
             return noErr
-        }, 1, &spec, nil, &handler)
+        }, 2, &specs, nil, &handler)
     }
 
     // MARK: Display

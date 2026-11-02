@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private(set) var announcer: Announcer!
     let notifications = NotificationWatcher()
     private(set) var pageWatcher: PageWatcher!
+    private(set) var dictation: Dictation!
     private var hud: HUD!
     private var statusItem: NSStatusItem!
     private var settingsWindow: NSWindow?
@@ -29,6 +30,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         announcer = Announcer(settings: settings, reader: reader)
         notifications.onBanner = { [weak self] in self?.announcer.handle($0) }
         pageWatcher = PageWatcher(settings: settings, reader: reader, grabber: grabber)
+        dictation = Dictation(settings: settings, kokoro: kokoro, reader: reader)
+        dictation.onStateChange = { [weak self] state in
+            guard let self else { return }
+            self.hotKeys.setEscapeActive(state == .listening || (self.reader.isActive && self.settings.escapeStops))
+        }
+        HotKeys.onRelease = { [weak self] action in
+            if action == .dictate { self?.dictation.released() }
+        }
+        // Load the dictation model once the engine is up, so the first dictation is quick.
+        kokoro.$status.removeDuplicates().sink { [weak self] status in
+            guard let self, status == .ready, self.settings.dictationEnabled else { return }
+            self.kokoro.warmSpeechToText(model: self.settings.dictationModel)
+        }.store(in: &bag)
         Log.write("launch \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") ?? "") accessibility=\(AXIsProcessTrusted())")
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -127,7 +141,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .selection:
             if let sel = grabber.selection() { start(sel) } else { reader.flash("Nothing selected") }
         case .pauseResume: reader.togglePause()
-        case .stop: if !announcer.dismissPending() { reader.stop() }
+        case .stop:
+            if dictation.state == .listening { dictation.cancel() } else if !announcer.dismissPending() { reader.stop() }
+        case .dictate: dictation.pressed()
         case .readNotification: announcer.readLatestOrAnswer()
         case .summarize: summarize()
         case .autoReadToggle: pageWatcher.togglePin()
@@ -302,7 +318,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         settingsWindow?.contentView = NSHostingView(rootView: SettingsView(initialTab: tab)
             .environmentObject(settings).environmentObject(kokoro).environmentObject(audio).environmentObject(reader)
-            .environmentObject(announcer).environmentObject(pageWatcher))
+            .environmentObject(announcer).environmentObject(pageWatcher).environmentObject(dictation))
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
     }
