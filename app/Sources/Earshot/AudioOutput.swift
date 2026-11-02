@@ -174,18 +174,28 @@ final class AudioOutput: ObservableObject {
     }
 
     /// `leadIn` seconds of silence first, so Bluetooth earbuds are awake before the first word.
-    func buffer(for audio: SpeechAudio, leadIn: Double = 0) -> AVAudioPCMBuffer? {
+    /// The playable buffer, and how far the speech moved in it (seconds) from
+    /// trimming silence and adding the lead-in, so word timings can follow.
+    func buffer(for audio: SpeechAudio, leadIn: Double = 0) -> (buffer: AVAudioPCMBuffer, shift: Double)? {
         var samples = audio.samples
         if audio.sampleRate != format.sampleRate {
             samples = Self.resample(samples, from: audio.sampleRate, to: format.sampleRate)
         }
-        samples = Self.trimSilence(samples, rate: format.sampleRate)
-        if leadIn > 0, !samples.isEmpty { samples = [Float](repeating: 0, count: Int(format.sampleRate * leadIn)) + samples }
-        guard !samples.isEmpty, let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)) else { return nil }
+        guard let kept = Self.speechBounds(samples, rate: format.sampleRate) else { return nil }
+        samples = Array(samples[kept])
+        var shift = -Double(kept.lowerBound) / format.sampleRate
+        if leadIn > 0 {
+            samples = [Float](repeating: 0, count: Int(format.sampleRate * leadIn)) + samples
+            shift += leadIn
+        }
+        guard let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)) else { return nil }
         buf.frameLength = AVAudioFrameCount(samples.count)
         samples.withUnsafeBufferPointer { buf.floatChannelData![0].update(from: $0.baseAddress!, count: samples.count) }
-        return buf
+        return (buf, shift)
     }
+
+    /// How long after the player renders a sample it is heard (Bluetooth adds a lot).
+    var outputLatency: Double { engine.outputNode.presentationLatency }
 
     func shutdown() {
         player.stop()
@@ -196,11 +206,13 @@ final class AudioOutput: ObservableObject {
     /// Keeps ~100 ms before and ~140 ms after speech so fast reading stays tight
     /// without clipping soft first sounds (s, f, h).
     static func trimSilence(_ s: [Float], rate: Double, threshold: Float = 0.003) -> [Float] {
+        speechBounds(s, rate: rate, threshold: threshold).map { Array(s[$0]) } ?? []
+    }
+
+    static func speechBounds(_ s: [Float], rate: Double, threshold: Float = 0.003) -> Range<Int>? {
         guard let first = s.firstIndex(where: { abs($0) > threshold }),
-              let last = s.lastIndex(where: { abs($0) > threshold }) else { return [] }
-        let start = max(0, first - Int(rate * 0.10))
-        let end = min(s.count, last + Int(rate * 0.14))
-        return Array(s[start..<end])
+              let last = s.lastIndex(where: { abs($0) > threshold }) else { return nil }
+        return max(0, first - Int(rate * 0.10))..<min(s.count, last + Int(rate * 0.14))
     }
 
     nonisolated static func resample(_ s: [Float], from: Double, to: Double) -> [Float] {

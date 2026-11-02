@@ -13,6 +13,19 @@ struct Grab {
     /// Text above / below a paragraph, so a tap can read more than one.
     var before: String? = nil
     var after: String? = nil
+    /// Finds the spoken words on screen, for the follow-along highlight.
+    var locator: WordLocator? = nil
+}
+
+/// Finds where a spoken word is on screen (top-left screen coordinates).
+/// Called off the main thread, one word after another, in reading order.
+protocol WordLocator: AnyObject, Sendable {
+    func locate(_ phrase: String) -> CGRect?
+}
+
+/// Letters and digits only, lowercased: "Earshot's," → "earshots".
+func normalizedWord(_ s: String) -> String {
+    String(s.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }.map(Character.init))
 }
 
 enum GrabUnit: String { case sentence, paragraph, fromHere, section, visible, window, selection }
@@ -61,14 +74,27 @@ final class TextGrabber {
         guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
               let el = focused.map({ $0 as! AXUIElement }) else { return nil }
         if let s = string(el, kAXSelectedTextAttribute), !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let rect = attr(el, kAXSelectedTextRangeAttribute).flatMap { paramRect(el, kAXBoundsForRangeParameterizedAttribute, $0) }
-            return Grab(text: s, frame: rect, source: "selection")
+            let rangeValue = attr(el, kAXSelectedTextRangeAttribute)
+            let rect = rangeValue.flatMap { paramRect(el, kAXBoundsForRangeParameterizedAttribute, $0) }
+            var grab = Grab(text: s, frame: rect, source: "selection")
+            var r = CFRange()
+            if let web = ancestor(of: el, role: "AXWebArea"), let marked = attr(web, "AXSelectedTextMarkerRange"),
+               CFGetTypeID(marked) == AXTextMarkerRangeGetTypeID() {
+                grab.locator = webLocator(web: web, start: AXTextMarkerRangeCopyStartMarker(marked as! AXTextMarkerRange), element: el, wholePage: false)
+            } else if let full = string(el, kAXValueAttribute), let rangeValue, AXValueGetValue(rangeValue as! AXValue, .cfRange, &r) {
+                grab.locator = textViewLocator(el, text: full, start: r.location)
+            }
+            return grab
         }
         // Web content: the selection lives on the web area as a text-marker range.
         if let web = ancestor(of: el, role: "AXWebArea") ?? (role(el) == "AXWebArea" ? el : nil),
            let range = attr(web, "AXSelectedTextMarkerRange"),
            let s = paramString(web, "AXStringForTextMarkerRange", range), !s.isEmpty {
-            return Grab(text: s, frame: paramRect(web, "AXBoundsForTextMarkerRange", range), source: "web selection")
+            var grab = Grab(text: s, frame: paramRect(web, "AXBoundsForTextMarkerRange", range), source: "web selection")
+            if CFGetTypeID(range) == AXTextMarkerRangeGetTypeID() {
+                grab.locator = webLocator(web: web, start: AXTextMarkerRangeCopyStartMarker(range as! AXTextMarkerRange), element: nil, wholePage: false)
+            }
+            return grab
         }
         return nil
     }
@@ -149,7 +175,9 @@ final class TextGrabber {
         case .section:
             // Join the section's blocks with line breaks so a heading isn't glued to its text.
             guard let (r, text) = sectionRange(of: el, web: web) else { return nil }
-            return Grab(text: String(text.prefix(maxChars)), frame: paramRect(web, "AXBoundsForTextMarkerRange", r), source: "web section")
+            var grab = Grab(text: String(text.prefix(maxChars)), frame: paramRect(web, "AXBoundsForTextMarkerRange", r), source: "web section")
+            grab.locator = webLocator(web: web, start: AXTextMarkerRangeCopyStartMarker(r as! AXTextMarkerRange), element: el, wholePage: false)
+            return grab
         case .visible:
             let text = visibleText(web: web)
             return text.isEmpty ? nil : Grab(text: text, frame: nil, source: "web visible")
@@ -161,6 +189,10 @@ final class TextGrabber {
         guard !text.isEmpty else { return nil }
         let rect = [.paragraph, .sentence, .section].contains(unit) ? paramRect(web, "AXBoundsForTextMarkerRange", range) : nil
         var grab = Grab(text: text, frame: rect, source: "web text markers")
+        if CFGetTypeID(range) == AXTextMarkerRangeGetTypeID() {
+            grab.locator = webLocator(web: web, start: AXTextMarkerRangeCopyStartMarker(range as! AXTextMarkerRange), element: el,
+                                      wholePage: unit == .fromHere || unit == .window)
+        }
         if unit == .paragraph, let n = blockNeighbours(of: el) {
             grab.before = n.before
             grab.after = n.after
@@ -379,6 +411,7 @@ final class TextGrabber {
         let rect = AXValueCreate(.cfRange, &cf).flatMap { paramRect(el, kAXBoundsForRangeParameterizedAttribute, $0) }
         guard !text.isEmpty else { return nil }
         var grab = Grab(text: String(text.prefix(maxChars)), frame: rect, source: "text view")
+        grab.locator = textViewLocator(el, text: full, start: ns.location)
         if unit == .paragraph {
             let s = full as NSString
             grab.before = String(s.substring(to: ns.location).suffix(30_000))
@@ -544,7 +577,7 @@ final class TextGrabber {
             guard found == nil, visited < 40000 else { return }
             visited += 1
             if role(el) == "AXStaticText", let v = string(el, kAXValueAttribute) {
-                if v.contains(needle) { found = el }
+                if needle == "*" ? (v.count > 80 && (frame(el)?.minY ?? 0) > 150) : v.contains(needle) { found = el }
                 return
             }
             for c in children(el) { walk(c) }
@@ -769,5 +802,155 @@ final class TextGrabber {
         guard let v = paramValue(el, name, param), CFGetTypeID(v) == AXValueGetTypeID() else { return nil }
         var r = CGRect.zero
         return AXValueGetValue(v as! AXValue, .cgRect, &r) && r.width > 0 ? r : nil
+    }
+}
+
+// MARK: Follow-along word finding
+
+extension TextGrabber {
+    func textBounds(_ el: AXUIElement, _ range: NSRange) -> CGRect? {
+        var cf = CFRange(location: range.location, length: range.length)
+        return AXValueCreate(.cfRange, &cf).flatMap { paramRect(el, kAXBoundsForRangeParameterizedAttribute, $0) }
+    }
+}
+
+
+/// Finds spoken words by searching ahead through the text from where the
+/// reading started, then asks the element holding the word for its box.
+/// The text is a run of elements: a native text view is one run; a web page is
+/// its text pieces in order (Chromium only gives exact boxes per element).
+final class TextRunLocator: WordLocator, @unchecked Sendable {
+    struct Run { let element: AXUIElement; let start: Int; let length: Int }
+
+    private let grabber: TextGrabber
+    private let load: () -> (runs: [Run], text: String, cursor: Int)?
+    private var runs: [Run] = []
+    private var text: NSString = ""
+    private var cursor = 0
+    private var loaded = false
+    private var found = false
+
+    init(grabber: TextGrabber, load: @escaping () -> (runs: [Run], text: String, cursor: Int)?) {
+        self.grabber = grabber
+        self.load = load
+    }
+
+    func locate(_ phrase: String) -> CGRect? {
+        if !loaded {
+            loaded = true
+            guard let l = load() else { return nil }
+            (runs, text, cursor) = (l.runs, l.text as NSString, l.cursor)
+        }
+        let words = phrase.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard let first = words.first, let r = find(first, from: cursor) else { return nil }
+        var range = r
+        for w in words.dropFirst() {
+            if let n = find(w, from: NSMaxRange(range), within: 24) { range = NSUnionRange(range, n) }
+        }
+        found = true
+        cursor = NSMaxRange(range)
+        return box(for: range)
+    }
+
+    /// Box of a text range, piece by piece across elements, kept to one line.
+    private func box(for range: NSRange) -> CGRect? {
+        var boxes: [CGRect] = []
+        for run in runs where run.start < NSMaxRange(range) && run.start + run.length > range.location {
+            let lo = max(range.location, run.start), hi = min(NSMaxRange(range), run.start + run.length)
+            let piece = text.substring(with: NSRange(location: lo, length: hi - lo)).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !piece.isEmpty, let b = grabber.textBounds(run.element, NSRange(location: lo - run.start, length: hi - lo)) else { continue }
+            boxes.append(b)
+        }
+        guard let first = boxes.first else { return nil }
+        return boxes.dropFirst().reduce(first) { acc, b in abs(b.midY - acc.midY) < acc.height * 0.5 ? acc.union(b) : acc }
+    }
+
+    private func find(_ word: String, from: Int, within: Int? = nil) -> NSRange? {
+        let core = word.trimmingCharacters(in: .punctuationCharacters.union(.symbols))
+        guard !core.isEmpty else { return nil }
+        let from = min(from, text.length)
+        let ahead = within ?? (found ? 400 : 2000)
+        if let r = wholeWord(core, in: NSRange(location: from, length: min(ahead, text.length - from)), backwards: false) { return r }
+        // The first word may sit above the start (paragraphs above were added).
+        guard !found, within == nil else { return nil }
+        let back = max(0, from - 30_000)
+        return wholeWord(core, in: NSRange(location: back, length: from - back), backwards: true)
+    }
+
+    private func wholeWord(_ word: String, in range: NSRange, backwards: Bool) -> NSRange? {
+        var search = range
+        let letters = CharacterSet.alphanumerics
+        func isLetter(_ i: Int) -> Bool {
+            guard i >= 0, i < text.length, let u = UnicodeScalar(text.character(at: i)) else { return false }
+            return letters.contains(u)
+        }
+        while search.length > 0 {
+            let r = text.range(of: word, options: backwards ? [.caseInsensitive, .backwards] : .caseInsensitive, range: search)
+            guard r.location != NSNotFound else { return nil }
+            if !isLetter(r.location - 1), !isLetter(NSMaxRange(r)) { return r }
+            search = backwards ? NSRange(location: search.location, length: r.location - search.location)
+                               : NSRange(location: NSMaxRange(r), length: NSMaxRange(search) - NSMaxRange(r))
+        }
+        return nil
+    }
+}
+
+extension TextGrabber {
+    /// A native text view: one run, starting at `start`.
+    func textViewLocator(_ el: AXUIElement, text: String, start: Int) -> WordLocator {
+        TextRunLocator(grabber: self) {
+            ([TextRunLocator.Run(element: el, start: 0, length: (text as NSString).length)], text, start)
+        }
+    }
+
+    /// A web page: the text pieces of the post or message holding the start
+    /// (or of the whole page for page-long reads), searching from that piece.
+    func webLocator(web: AXUIElement, start marker: CFTypeRef?, element hint: AXUIElement?, wholePage: Bool) -> WordLocator {
+        TextRunLocator(grabber: self) { [self] in
+            let fromMarker = marker.flatMap { paramValue(web, "AXUIElementForTextMarker", $0) }
+                .flatMap { CFGetTypeID($0) == AXUIElementGetTypeID() ? ($0 as! AXUIElement) : nil }
+            guard let startEl = fromMarker ?? hint else { return nil }
+            var root = web
+            if !wholePage {
+                var cur = startEl
+                for _ in 0..<40 {
+                    guard let p = attrElement(cur, kAXParentAttribute) else { break }
+                    let sub = string(p, kAXSubroleAttribute)
+                    if sub == "AXDocumentArticle" || sub == "AXLandmarkMain" || role(p) == "AXWebArea" { root = p; break }
+                    cur = p
+                }
+            }
+            var runs: [TextRunLocator.Run] = []
+            var text = ""
+            var length = 0
+            var cursor: Int?
+            var visited = 0
+            func walk(_ e: AXUIElement) {
+                guard visited < 8000 else { return }
+                visited += 1
+                if cursor == nil, CFEqual(e, startEl) { cursor = length }
+                if role(e) == "AXStaticText" {
+                    let v = string(e, kAXValueAttribute) ?? ""
+                    let n = (v as NSString).length
+                    if n > 0 {
+                        runs.append(.init(element: e, start: length, length: n))
+                        text += v + "\n"
+                        length += n + 1
+                    }
+                    return
+                }
+                for c in children(e) { walk(c) }
+            }
+            walk(root)
+            return runs.isEmpty ? nil : (runs, text, cursor ?? 0)
+        }
+    }
+
+    /// Debug: a web locator starting at `el`'s paragraph, plus that paragraph's text.
+    func locatorForTest(_ el: AXUIElement) -> (locator: WordLocator, text: String)? {
+        guard let web = ancestor(of: el, role: "AXWebArea"),
+              let r = paramValue(web, "AXTextMarkerRangeForUIElement", attrElement(el, kAXParentAttribute) ?? el),
+              let text = paramString(web, "AXStringForTextMarkerRange", r) else { return nil }
+        return (webLocator(web: web, start: AXTextMarkerRangeCopyStartMarker(r as! AXTextMarkerRange), element: el, wholePage: false), text)
     }
 }

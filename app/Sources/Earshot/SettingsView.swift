@@ -697,6 +697,11 @@ private struct ReadingTab: View {
             Section("Feedback") {
                 Toggle("Show the now-reading bar", isOn: $settings.showHUD)
                 Toggle("Outline the text that was picked up", isOn: $settings.highlightSource)
+                Toggle("Highlight each word as it's spoken (in the bar)", isOn: $settings.highlightWords)
+                Toggle("Highlight it on the page too", isOn: $settings.highlightWordsOnPage)
+                    .disabled(!settings.highlightWords)
+                Text("Short words are lit together with the next one. On-page highlighting works in browsers, Electron apps and Mac text views; other text is followed in the bar.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("Calls") {
                 Toggle("Pause reading and hold notifications while another app uses the microphone", isOn: $settings.pauseForCalls)

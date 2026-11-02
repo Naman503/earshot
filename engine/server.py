@@ -12,7 +12,8 @@ Protocol (one JSON object per line on stdin):
 
 Every reply on stdout is a JSON header line, optionally followed by exactly
 `bytes` bytes of mono float32 little-endian PCM at `sr` Hz:
-  {"type": "audio", "id": 7, "sr": 24000, "bytes": 123456}
+  {"type": "audio", "id": 7, "sr": 24000, "bytes": 123456, "words": [[0, 5, 0.11, 0.24], ...]}
+      words = [UTF-16 offset, UTF-16 length, start s, end s] of each spoken word
   {"type": "error", "id": 7, "message": "..."}
   {"type": "voices", "voices": ["af_heart", ...]}
   {"type": "transcript", "id": 8, "text": "..."}
@@ -93,6 +94,31 @@ def transcribe(msg):
     return model.generate(mx.array(pcm)).text.strip()
 
 
+def word_times(tokens, offset):
+    """(text, start s, end s) per spoken word of one Kokoro segment."""
+    out = []
+    for t in tokens or []:
+        if t.start_ts is None or t.end_ts is None or not any(ch.isalnum() for ch in t.text):
+            continue
+        out.append((t.text, offset + t.start_ts, offset + t.end_ts))
+    return out
+
+
+def align_words(text, words, stretch):
+    """[[utf16 start, utf16 length, start s, end s], ...] in the input text, with
+    times scaled for the time-stretch. Words not found nearby are left out."""
+    spans, cursor = [], 0
+    for w, t0, t1 in words:
+        i = text.find(w, cursor, cursor + 80 + len(w))
+        if i < 0:
+            continue
+        start16 = len(text[:i].encode("utf-16-le")) // 2
+        len16 = len(w.encode("utf-16-le")) // 2
+        spans.append([start16, len16, round(t0 / stretch, 3), round(t1 / stretch, 3)])
+        cursor = i + len(w)
+    return spans
+
+
 def lang_for(voice):
     # Kokoro voice ids start with a language letter: a = US English, b = UK English, ...
     return voice[0] if voice else "a"
@@ -171,20 +197,21 @@ def main():
                 continue
         try:
             voice = msg.get("voice") or "af_heart"
-            chunks = [
-                np.asarray(r.audio, dtype=np.float32)
-                for r in model.generate(
-                    msg["text"],
-                    voice=voice,
-                    speed=float(msg.get("speed", 1.0)),
-                    lang_code=lang_for(voice),
-                    split_pattern=r"\n+",
-                )
-            ]
+            stretch = float(msg.get("stretch", 1.0))
+            pipeline = model._get_pipeline(lang_for(voice))
+            chunks, words, offset = [], [], 0.0
+            for r in pipeline(msg["text"], voice=voice, speed=float(msg.get("speed", 1.0)), split_pattern=r"\n+"):
+                if r.audio is None:
+                    continue
+                a = np.asarray(r.audio, dtype=np.float32).reshape(-1)
+                words.extend(word_times(r.tokens, offset))
+                chunks.append(a)
+                offset += a.size / SAMPLE_RATE
             audio = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
-            audio = time_stretch(audio, float(msg.get("stretch", 1.0)))
+            audio = time_stretch(audio, stretch)
             data = audio.astype("<f4").tobytes()
-            send({"type": "audio", "id": msg["id"], "sr": SAMPLE_RATE, "bytes": len(data)}, data)
+            spans = align_words(msg["text"], words, stretch)
+            send({"type": "audio", "id": msg["id"], "sr": SAMPLE_RATE, "bytes": len(data), "words": spans}, data)
         except Exception as exc:  # keep serving after a bad request
             traceback.print_exc()
             send({"type": "error", "id": msg["id"], "message": str(exc)})

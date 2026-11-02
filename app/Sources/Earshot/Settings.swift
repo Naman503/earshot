@@ -24,6 +24,9 @@ final class Settings: ObservableObject {
     @Published var skipCitations: Bool { didSet { save("skipCitations", skipCitations) } }
     @Published var skipEmoji: Bool { didSet { save("skipEmoji", skipEmoji) } }
     @Published var highlightSource: Bool { didSet { save("highlightSource", highlightSource) } }
+    /// Follow-along: light up the word being spoken on the page and in the bar.
+    @Published var highlightWords: Bool { didSet { save("highlightWords", highlightWords) } }
+    @Published var highlightWordsOnPage: Bool { didSet { save("highlightWordsOnPage", highlightWordsOnPage) } }
     @Published var showHUD: Bool { didSet { save("showHUD", showHUD) } }
 
     /// How far a paragraph tap reaches: paragraphs above, and below (-1 = to the end).
@@ -126,6 +129,8 @@ final class Settings: ObservableObject {
         skipCitations = d.object(forKey: "skipCitations") as? Bool ?? true
         skipEmoji = d.object(forKey: "skipEmoji") as? Bool ?? true
         highlightSource = d.object(forKey: "highlightSource") as? Bool ?? true
+        highlightWords = d.object(forKey: "highlightWords") as? Bool ?? true
+        highlightWordsOnPage = d.object(forKey: "highlightWordsOnPage") as? Bool ?? true
         paragraphsBefore = d.object(forKey: "paragraphsBefore") as? Int ?? 0
         paragraphsAfter = d.object(forKey: "paragraphsAfter") as? Int ?? 0
         tapReadsSelection = d.object(forKey: "tapReadsSelection") as? Bool ?? true

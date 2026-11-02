@@ -17,6 +17,10 @@ final class Reader: ObservableObject {
     /// Recently read texts, newest first (for "Read again" and the menu).
     @Published private(set) var history: [String] = []
     var onStateChange: ((State) -> Void)?
+    /// The word being spoken now, as a range in `currentText` (nil between words).
+    @Published private(set) var spokenRange: NSRange?
+    /// Called when the spoken word changes: its text and where to look for it.
+    var onWord: ((String?, WordLocator?) -> Void)?
 
     private let settings: Settings
     private let audio: AudioOutput
@@ -56,6 +60,15 @@ final class Reader: ObservableObject {
     /// Runs when this reading is cut short (Esc, a new tap, headphones gone).
     private var onInterrupt: (() -> Void)?
     private let lookahead = 4
+    /// Word timings per chunk, in seconds from the start of its buffer.
+    private var timings: [Int: [SpokenWord]] = [:]
+    /// Where each scheduled chunk starts in the player's timeline (frames since play).
+    private var chunkFrames: [Int: (start: AVAudioFramePosition, length: AVAudioFramePosition)] = [:]
+    private var scheduledFrames: AVAudioFramePosition = 0
+    private var wordTimer: Timer?
+    private var spoken: (chunk: Int, word: Int)?
+    /// Finds spoken words on the page this reading came from.
+    private var locator: WordLocator?
 
     init(settings: Settings, audio: AudioOutput, kokoro: KokoroEngine) {
         self.settings = settings
@@ -78,7 +91,7 @@ final class Reader: ObservableObject {
     /// Reads `raw` aloud. `quiet` skips the on-screen "connect headphones"
     /// reminder (for notifications). `onFinish` runs only when it reads to the end.
     @discardableResult
-    func read(_ raw: String, source: String, quiet: Bool = false,
+    func read(_ raw: String, source: String, quiet: Bool = false, locator: WordLocator? = nil,
               onFinish: (() -> Void)? = nil, onInterrupt: (() -> Void)? = nil) -> Bool {
         let text = TextPrep.apply(settings.pronunciations, to: TextPrep.clean(raw, options: settings.textOptions))
         let mapped = TextPrep.chunksWithParagraphs(text)
@@ -90,6 +103,7 @@ final class Reader: ObservableObject {
         Log.write("read: \(parts.count) chunks from \(source), \(text.count) chars")
         let started = start(parts, at: 0, quiet: quiet, onFinish: onFinish)
         if started {
+            self.locator = locator
             self.onInterrupt = onInterrupt
             paragraphOf = mapped.map(\.paragraph)
             if !source.hasPrefix("notification"), source != "sample", source != "read again" {
@@ -144,6 +158,9 @@ final class Reader: ObservableObject {
         bakedFor = [:]
         leadInIndex = index
         applyAudioSettings()
+        wordTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.trackWord() }
+        }
         if settleFirst {
             // Ducking just reconfigured the output; let it settle before speaking.
             let id = readID
@@ -164,6 +181,11 @@ final class Reader: ObservableObject {
         playToken += 1
         audio.player.stop()
         kokoro.cancelPending()
+        resetTimeline()
+        timings = [:]
+        locator = nil
+        wordTimer?.invalidate()
+        wordTimer = nil
         chunks = []
         cache = [:]
         failed = []
@@ -324,8 +346,11 @@ final class Reader: ObservableObject {
                 result = await apple.synthesize(text, voiceID: settings.appleVoiceID, speed: 1)
             }
             guard id == readID else { return }
-            if let result, let buffer = audio.buffer(for: result, leadIn: leadIn) {
+            if let result, let (buffer, shift) = audio.buffer(for: result, leadIn: leadIn) {
                 cache[i] = buffer
+                let duration = Double(buffer.frameLength) / buffer.format.sampleRate
+                let words = result.words.isEmpty ? SpokenWord.estimated(for: text, duration: duration - shift) : result.words
+                timings[i] = SpokenWord.grouped(words.map { SpokenWord(range: $0.range, start: $0.start + shift, end: $0.end + shift) })
                 bakedFor[i] = kokoroSession ? stretch : 1
             } else {
                 failed.insert(i)
@@ -347,6 +372,8 @@ final class Reader: ObservableObject {
             guard let buffer = cache[next] else { break }
             let i = next
             scheduled.append(i)
+            chunkFrames[i] = (scheduledFrames, AVAudioFramePosition(buffer.frameLength))
+            scheduledFrames += AVAudioFramePosition(buffer.frameLength)
             audio.player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
                 DispatchQueue.main.async { MainActor.assumeIsolated { self?.finished(i, token: token) } }
             }
@@ -385,6 +412,7 @@ final class Reader: ObservableObject {
     private func restartAt(_ i: Int, on device: OutputDevice?) {
         playToken += 1
         audio.player.stop()
+        resetTimeline()
         if let device {
             try? audio.prepare(device: device)
             deviceID = device.id
@@ -397,6 +425,44 @@ final class Reader: ObservableObject {
         fill()
         scheduleReady()
         if !wasPaused, scheduled.isEmpty { setState(.preparing) }
+    }
+
+    // MARK: Following along
+
+    private func resetTimeline() {
+        chunkFrames = [:]
+        scheduledFrames = 0
+        setSpoken(nil)
+    }
+
+    /// Finds the word being heard right now from the player's position, minus
+    /// the output delay (large on Bluetooth), and reports it when it changes.
+    private func trackWord() {
+        guard state == .speaking, let nodeTime = audio.player.lastRenderTime,
+              let t = audio.player.playerTime(forNodeTime: nodeTime) else { return }
+        let rate = t.sampleRate
+        let heard = t.sampleTime - AVAudioFramePosition(audio.outputLatency * Double(audio.stretch.rate) * rate)
+        guard let chunk = scheduled.first(where: { i in
+            chunkFrames[i].map { heard >= $0.start && heard < $0.start + $0.length } ?? false
+        }), let frames = chunkFrames[chunk], let words = timings[chunk] else { return }
+        let secs = Double(heard - frames.start) / rate
+        let w = words.lastIndex { $0.start <= secs }
+        // Past a word's end with the next not started: keep it lit through short gaps.
+        setSpoken(w.map { (chunk, $0) })
+    }
+
+    private func setSpoken(_ s: (chunk: Int, word: Int)?) {
+        guard s?.chunk != spoken?.chunk || s?.word != spoken?.word else { return }
+        spoken = s
+        guard let s, let w = timings[s.chunk]?[s.word], s.chunk < chunks.count else {
+            spokenRange = nil
+            onWord?(nil, locator)
+            return
+        }
+        let text = chunks[s.chunk] as NSString
+        guard NSMaxRange(w.range) <= text.length else { return }
+        spokenRange = s.chunk == position - 1 ? w.range : nil
+        onWord?(text.substring(with: w.range), locator)
     }
 
     // MARK: Headphones

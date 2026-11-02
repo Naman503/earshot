@@ -5,6 +5,50 @@ import Foundation
 struct SpeechAudio {
     var samples: [Float]
     var sampleRate: Double
+    /// When each word is spoken (empty if the engine doesn't say).
+    var words: [SpokenWord] = []
+}
+
+/// A word (or a short word plus the next one) and when it's spoken, in seconds
+/// from the start of its chunk's audio. `range` is UTF-16 in the chunk text.
+struct SpokenWord: Equatable {
+    var range: NSRange
+    var start: Double
+    var end: Double
+
+    /// Short words ("of", "a", "the") are shown together with the next word,
+    /// so the highlight doesn't flicker over them.
+    static func grouped(_ words: [SpokenWord]) -> [SpokenWord] {
+        var out: [SpokenWord] = []
+        var i = 0
+        while i < words.count {
+            var w = words[i]
+            if w.range.length <= 3, i + 1 < words.count {
+                let n = words[i + 1]
+                w = SpokenWord(range: NSUnionRange(w.range, n.range), start: w.start, end: n.end)
+                i += 1
+            }
+            out.append(w)
+            i += 1
+        }
+        return out
+    }
+
+    /// No timings from the engine (Apple voice): spread the words over the
+    /// audio by length, which is close enough to follow along.
+    static func estimated(for text: String, duration: Double) -> [SpokenWord] {
+        let ns = text as NSString
+        var ranges: [NSRange] = []
+        ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length), options: .byWords) { _, r, _, _ in ranges.append(r) }
+        let weight = ranges.reduce(0) { $0 + $1.length + 2 }
+        guard weight > 0, duration > 0 else { return [] }
+        var t = 0.0
+        return ranges.map { r in
+            let d = duration * Double(r.length + 2) / Double(weight)
+            defer { t += d }
+            return SpokenWord(range: r, start: t, end: t + d)
+        }
+    }
 }
 
 /// The resident Kokoro process (engine/server.py) driven over stdio. Requests
@@ -175,7 +219,10 @@ final class KokoroEngine: ObservableObject {
         case "audio":
             guard let id = h["id"] as? Int, let c = waiting.removeValue(forKey: id) else { return }
             let samples = body.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
-            c.resume(returning: SpeechAudio(samples: samples, sampleRate: h["sr"] as? Double ?? 24000))
+            let words = (h["words"] as? [[Double]] ?? []).compactMap { w -> SpokenWord? in
+                w.count == 4 ? SpokenWord(range: NSRange(location: Int(w[0]), length: Int(w[1])), start: w[2], end: w[3]) : nil
+            }
+            c.resume(returning: SpeechAudio(samples: samples, sampleRate: h["sr"] as? Double ?? 24000, words: words))
         case "transcript":
             guard let id = h["id"] as? Int else { return }
             transcripts.removeValue(forKey: id)?.resume(returning: h["text"] as? String)

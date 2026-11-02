@@ -85,6 +85,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }.store(in: &bag)
         reader.objectWillChange.sink { [weak self] in DispatchQueue.main.async { self?.hud.update() } }.store(in: &bag)
+        reader.onWord = { [weak self] word, locator in self?.hud.showWord(word, locator: locator) }
         reader.onStateChange = { [weak self] state in
             guard let self else { return }
             self.hotKeys.setEscapeActive(state != .idle && self.settings.escapeStops)
@@ -261,7 +262,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func start(_ grab: Grab) {
         if let f = grab.frame { hud.flash(rect: f) }
-        reader.read(grab.text, source: grab.source)
+        reader.read(grab.text, source: grab.source, locator: grab.locator)
     }
 
     // MARK: Menu
@@ -474,6 +475,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     for (b, a) in [(1, 1), (0, -1), (2, 0)] {
                         let t = TextUnits.expand(current: "<<CURRENT>>", before: n?.before ?? "", after: n?.after ?? "", paragraphsBefore: b, paragraphsAfter: a)
                         Log.write("para-test reach \(b) up / \(a) down:\n\(t)")
+                    }
+                }
+            case "--locate-test":
+                // "App|needle": finds the paragraph, then each of its words on screen (silent).
+                let bits = value.split(separator: "|", maxSplits: 1).map(String.init)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    guard bits.count == 2, let el = self.grabber.findText(inApp: bits[0], needle: bits[1]),
+                          let loc = self.grabber.locatorForTest(el) else { Log.write("locate-test: not found"); return }
+                    let words = SpokenWord.grouped(SpokenWord.estimated(for: loc.text, duration: 10))
+                    DispatchQueue.global().async {
+                        let t0 = Date()
+                        var hits = 0
+                        for w in words.prefix(25) {
+                            let phrase = (loc.text as NSString).substring(with: w.range)
+                            let box = loc.locator.locate(phrase)
+                            if box != nil { hits += 1 }
+                            Log.write("locate-test: \(phrase) → \(box.map { "\(Int($0.minX)),\(Int($0.minY)) \(Int($0.width))x\(Int($0.height))" } ?? "nil")")
+                        }
+                        Log.write("locate-test: \(hits)/\(min(25, words.count)) found in \(Int(Date().timeIntervalSince(t0) * 1000)) ms")
                     }
                 }
             case "--mic-test":
