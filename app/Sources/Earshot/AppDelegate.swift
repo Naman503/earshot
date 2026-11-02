@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Combine
 import ScreenCaptureKit
 import EarshotCore
@@ -350,6 +351,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func openSettingsMenu() { openSettings(tab: .howTo) }
+    @objc func openSettingsFromMenu(_ sender: Any?) { openSettings(tab: .howTo) }
 
     func openSettings(tab: SettingsTab) {
         SettingsNavigation.shared.tab = tab
@@ -443,6 +445,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         Log.write("watch-probe: url=\(info?.url ?? "nil") chars=\(info?.text.count ?? -1) in \(Int(Date().timeIntervalSince(t0) * 1000)) ms")
                     }
                 }
+            case "--dictate-front":
+                // Like --dictate-test, but types into whatever is focused after 4 s.
+                waitForEngine { DispatchQueue.main.asyncAfter(deadline: .now() + 4) { self.dictationSelfTest(wav: value, intoFront: true) } }
+            case "--dictate-test":
+                // Transcribes a WAV and types it into a test field: checks engine + paste end to end.
+                waitForEngine { self.dictationSelfTest(wav: value) }
             case "--settings":
                 openSettings(tab: SettingsTab(rawValue: value) ?? .howTo)
             case "--render-settings":
@@ -462,6 +470,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             default:
                 break
+            }
+        }
+    }
+
+    private func dictationSelfTest(wav: String, intoFront: Bool = false) {
+        guard let file = try? AVAudioFile(forReading: URL(fileURLWithPath: wav)),
+              let buf = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)),
+              (try? file.read(into: buf)) != nil, let ch = buf.floatChannelData else { Log.write("dictate-test: can't read \(wav)"); return }
+        var samples = Array(UnsafeBufferPointer(start: ch[0], count: Int(buf.frameLength)))
+        if file.processingFormat.sampleRate != 16_000 { samples = AudioOutput.resample(samples, from: file.processingFormat.sampleRate, to: 16_000) }
+        let window = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 600, height: 80), styleMask: [.titled], backing: .buffered, defer: false)
+        window.title = "Earshot dictation test"
+        let field = NSTextField(frame: NSRect(x: 10, y: 20, width: 580, height: 40))
+        window.contentView?.addSubview(field)
+        if !intoFront {
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            window.makeFirstResponder(field)
+        }
+        Task {
+            let t0 = Date()
+            let text = await kokoro.transcribe(samples, model: settings.dictationModel, language: settings.dictationLanguage)
+            Log.write("dictate-test: transcribed in \(Int(Date().timeIntervalSince(t0) * 1000)) ms: \(text ?? "nil")")
+            guard let text else { return }
+            Dictation.type(text)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                Log.write("dictate-test: field now contains \"\(field.stringValue)\"")
+                window.close()
             }
         }
     }

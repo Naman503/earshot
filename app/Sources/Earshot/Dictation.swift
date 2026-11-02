@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import AVFoundation
 import CoreAudio
 import Speech
@@ -20,6 +21,8 @@ final class Dictation: ObservableObject {
     private let collector = Collector()
     private var pressedAt = Date.distantPast
     private var maxTimer: Timer?
+    private var liveTimer: Timer?
+    private var liveBusy = false
 
     /// Gathers 16 kHz mono samples from the audio thread.
     final class Collector: @unchecked Sendable {
@@ -28,6 +31,7 @@ final class Dictation: ObservableObject {
         func reset() { lock.withLock { samples = [] } }
         func append(_ s: UnsafeBufferPointer<Float>) { lock.withLock { samples.append(contentsOf: s) } }
         func take() -> [Float] { lock.withLock { let s = samples; samples = []; return s } }
+        func peek() -> [Float] { lock.withLock { samples } }
     }
 
     init(settings: Settings, kokoro: KokoroEngine, reader: Reader) {
@@ -38,6 +42,8 @@ final class Dictation: ObservableObject {
 
     /// Shortcut pressed: start, or finish if already listening (tap mode).
     func pressed() {
+        Log.write("dictation: key down (state \(state), mic \(AVCaptureDevice.authorizationStatus(for: .audio).rawValue))")
+        if state == .idle { pressedAt = Date() }
         switch state {
         case .idle: start()
         case .listening: finish()
@@ -47,6 +53,7 @@ final class Dictation: ObservableObject {
 
     /// Shortcut released: a long press means hold-to-talk, so finish now.
     func released() {
+        Log.write("dictation: key up after \(Int(Date().timeIntervalSince(pressedAt) * 1000)) ms")
         if state == .listening, Date().timeIntervalSince(pressedAt) > 0.45 { finish() }
     }
 
@@ -64,10 +71,13 @@ final class Dictation: ObservableObject {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized: break
         case .notDetermined:
-            // Ask, and start listening the moment it's allowed.
+            // The prompt takes the key press; by the time it's answered the keys are up.
             AVCaptureDevice.requestAccess(for: .audio) { ok in
                 DispatchQueue.main.async { [weak self] in
-                    if ok { self?.start() } else { self?.reader.flash("Dictation needs the microphone") }
+                    guard let self else { return }
+                    let key = self.settings.shortcuts[.dictate].map(HotKeys.describe) ?? "the shortcut"
+                    self.reader.flash(ok ? "Microphone allowed — hold \(key) and talk" : "Dictation needs the microphone")
+                    Log.write("dictation: microphone \(ok ? "allowed" : "denied")")
                 }
             }
             return
@@ -76,7 +86,6 @@ final class Dictation: ObservableObject {
             return
         }
         if reader.isActive { reader.stop() }
-        pressedAt = Date()
         collector.reset()
         do {
             try startRecording()
@@ -89,8 +98,13 @@ final class Dictation: ObservableObject {
         let key = settings.shortcuts[.dictate].map(HotKeys.describe) ?? "the shortcut"
         reader.hold("Listening… release or press \(key) to finish, Esc to cancel")
         setState(.listening)
+        Log.write("dictation: listening on \(settings.dictationBuiltInMic ? "built-in mic" : "default input")")
         maxTimer = Timer.scheduledTimer(withTimeInterval: 120, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.finish() }
+        }
+        // Live preview: re-transcribe what's been said so far (~0.1 s each on Parakeet).
+        liveTimer = Timer.scheduledTimer(withTimeInterval: 1.2, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.updateLive() }
         }
     }
 
@@ -150,7 +164,22 @@ final class Dictation: ObservableObject {
         self.engine = engine
     }
 
+    private func updateLive() {
+        guard state == .listening, !liveBusy, settings.dictationModel == "parakeet" else { return }
+        let samples = collector.peek()
+        guard samples.count > 16_000 / 2 else { return }
+        liveBusy = true
+        Task {
+            let text = await kokoro.transcribe(samples, model: "parakeet", language: "en")
+            liveBusy = false
+            guard state == .listening, let text, !text.isEmpty else { return }
+            reader.hold("🎙 " + (text.count > 140 ? "…" + text.suffix(140) : text))
+        }
+    }
+
     private func stopRecording() {
+        liveTimer?.invalidate()
+        liveTimer = nil
         maxTimer?.invalidate()
         maxTimer = nil
         engine?.inputNode.removeTap(onBus: 0)
@@ -163,8 +192,51 @@ final class Dictation: ObservableObject {
         onStateChange?(s)
     }
 
-    /// Pastes `text` into the focused field, then puts the clipboard back.
-    static func type(_ text: String) {
+    /// Puts `text` where the cursor is, trying the most reliable way first and
+    /// checking it worked before falling back:
+    ///   1. Accessibility: insert into the focused field directly (no clipboard).
+    ///   2. ⌘V with the text on the clipboard (restored afterwards).
+    ///   3. Typing the characters as keystrokes (works in any app).
+    static func type(_ raw: String) {
+        let text = raw.hasSuffix(" ") ? raw : raw + " "
+        let system = AXUIElementCreateSystemWide()
+        var focusedRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focusedRef)
+        let focused = focusedRef.map { $0 as! AXUIElement }
+        func value() -> String? {
+            var v: CFTypeRef?
+            guard let focused, AXUIElementCopyAttributeValue(focused, kAXValueAttribute as CFString, &v) == .success else { return nil }
+            return v as? String
+        }
+        let before = value()
+
+        // 1. Direct insert. Chromium and Electron fields often report success
+        //    without changing anything, so check the value moved.
+        if let focused, before != nil,
+           AXUIElementSetAttributeValue(focused, kAXSelectedTextAttribute as CFString, text as CFString) == .success,
+           let after = value(), after != before, after.contains(raw.trimmingCharacters(in: .whitespaces)) {
+            Log.write("dictation: inserted via accessibility")
+            return
+        }
+
+        // 2. Paste, then confirm when the field's value is readable.
+        paste(text)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            guard let before, let after = value() else {
+                Log.write("dictation: pasted (field value not readable, assuming it landed)")
+                return
+            }
+            if after != before {
+                Log.write("dictation: pasted")
+            } else {
+                // 3. Keystrokes.
+                Log.write("dictation: paste didn't land, typing instead")
+                typeKeystrokes(text)
+            }
+        }
+    }
+
+    private static func paste(_ text: String) {
         let pb = NSPasteboard.general
         let saved = pb.pasteboardItems?.map { item in
             Dictionary(uniqueKeysWithValues: item.types.compactMap { t in item.data(forType: t).map { (t, $0) } })
@@ -173,13 +245,15 @@ final class Dictation: ObservableObject {
         pb.setString(text, forType: .string)
         // Clipboard managers skip transient items.
         pb.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.TransientType"))
-        let src = CGEventSource(stateID: .combinedSessionState)
+        // A private source so modifier keys still physically held (⌃⌥ from the
+        // shortcut) don't mix into the ⌘V.
+        let src = CGEventSource(stateID: .privateState)
         for down in [true, false] {
             let e = CGEvent(keyboardEventSource: src, virtualKey: 9, keyDown: down)  // V
             e?.flags = .maskCommand
-            e?.post(tap: .cghidEventTap)
+            e?.post(tap: .cgSessionEventTap)
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
             pb.clearContents()
             let items = saved.map { types -> NSPasteboardItem in
                 let item = NSPasteboardItem()
@@ -187,6 +261,24 @@ final class Dictation: ObservableObject {
                 return item
             }
             if !items.isEmpty { pb.writeObjects(items) }
+        }
+    }
+
+    /// Types text as Unicode keystrokes, 20 characters per event.
+    static func typeKeystrokes(_ text: String) {
+        let src = CGEventSource(stateID: .privateState)
+        let units = Array(text.utf16)
+        var i = 0
+        while i < units.count {
+            let chunk = Array(units[i..<min(i + 20, units.count)])
+            for down in [true, false] {
+                let e = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: down)
+                e?.flags = []
+                chunk.withUnsafeBufferPointer { e?.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: $0.baseAddress) }
+                e?.post(tap: .cgSessionEventTap)
+            }
+            i += 20
+            usleep(2_000)
         }
     }
 
