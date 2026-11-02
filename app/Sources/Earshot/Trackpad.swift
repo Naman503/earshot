@@ -81,8 +81,20 @@ final class Trackpad {
         start(multiTapFingers: multiTapFingers)
     }
 
+    nonisolated private static let debug = UserDefaults.standard.bool(forKey: "touchDebug")
+
     nonisolated private static let callback: Callback = { _, touches, count, timestamp, _ in
         var points: [CGPoint] = []
+        if debug, let touches, count > 0 {
+            // `defaults write dev.naman.earshot touchDebug -bool true` logs raw frames.
+            let raw = (0..<Int(count)).map { i -> String in
+                let t = touches + i * touchStride
+                let ints = (0..<6).map { String(t.load(fromByteOffset: 16 + $0 * 4, as: Int32.self)) }.joined(separator: ",")
+                let floats = (0..<4).map { String(format: "%.3f", t.load(fromByteOffset: 32 + $0 * 4, as: Float.self)) }.joined(separator: ",")
+                return "[\(ints) | \(floats)]"
+            }
+            Log.write("touch n=\(count) \(raw.joined(separator: " "))")
+        }
         if let touches, count > 0 {
             for i in 0..<Int(count) {
                 let t = touches + i * touchStride

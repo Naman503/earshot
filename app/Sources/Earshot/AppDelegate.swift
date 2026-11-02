@@ -64,6 +64,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             MainActor.assumeIsolated { self?.restartTrackpad() }
         }
 
+        // Wake up web-content accessibility in browsers and Electron apps ahead of the first tap.
+        for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular {
+            grabber.enableWebAccessibility(pid: app.processIdentifier)
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] note in
+            guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+            MainActor.assumeIsolated { _ = self?.grabber.enableWebAccessibility(pid: app.processIdentifier) }
+        }
+
         handleDebugArguments()
         if !AXIsProcessTrusted() { openSettings(tab: .general) }
     }
@@ -112,7 +121,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Task.detached {
             let grab = await grabber.grab(unit, at: point)
             await MainActor.run {
-                Log.write("grab \(unit.rawValue): \(grab?.source ?? "nothing") in \(Int(Date().timeIntervalSince(started) * 1000)) ms")
+                let app = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
+                Log.write("grab \(unit.rawValue) in \(app): \(grab?.source ?? "nothing") in \(Int(Date().timeIntervalSince(started) * 1000)) ms: \(grab?.text.prefix(80) ?? "")")
                 if let grab { self.start(grab) } else { self.reader.flash("Couldn't find text under the pointer") }
             }
         }
@@ -214,11 +224,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 openSettings(tab: SettingsTab(rawValue: value) ?? .voice)
             case "--say":
                 waitForEngine { self.reader.read(value, source: "--say") }
-            case "--probe":
-                let unit = GrabUnit(rawValue: value) ?? .paragraph
+            case "--probe", "--probe-app":
+                let unit: GrabUnit = parts[0] == "--probe" ? GrabUnit(rawValue: value) ?? .paragraph : .paragraph
                 DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                    let p = TextGrabber.pointer
+                    let p = parts[0] == "--probe-app" ? self.grabber.samplePoint(inApp: value) ?? .zero : TextGrabber.pointer
                     Task.detached {
+                        Log.write("probe diagnose: \(self.grabber.diagnose(at: p))")
                         let g = await self.grabber.grab(unit, at: p)
                         Log.write("probe \(unit.rawValue) at \(p): source=\(g?.source ?? "nil") frame=\(String(describing: g?.frame))\n---\n\(g?.text.prefix(1500) ?? "")\n---")
                     }
