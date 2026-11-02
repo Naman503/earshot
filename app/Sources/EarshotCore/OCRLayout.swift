@@ -50,6 +50,19 @@ public enum OCRLayout {
         return gap > -h * 0.5 && gap < h * 0.9 && sameSize && aligned
     }
 
+    /// Blocks i's section: back to the nearest heading (a block with clearly
+    /// taller text) and forward to just before the next one.
+    public static func sectionRange(_ blocks: [Block], around i: Int) -> ClosedRange<Int> {
+        let heights = blocks.map { b in b.lines.map(\.rect.height).reduce(0, +) / CGFloat(max(b.lines.count, 1)) }
+        let body = heights.sorted()[heights.count / 2]
+        let isHeading = { (k: Int) in heights[k] > body * 1.18 && blocks[k].lines.count <= 3 }
+        var start = i
+        while start > 0, !isHeading(start) { start -= 1 }
+        var end = i
+        while end + 1 < blocks.count, !isHeading(end + 1) { end += 1 }
+        return start...end
+    }
+
     /// The block under `point`, or the nearest one.
     public static func blockIndex(at point: CGPoint, in blocks: [Block]) -> Int? {
         if let i = blocks.firstIndex(where: { $0.rect.insetBy(dx: -6, dy: -6).contains(point) }) { return i }

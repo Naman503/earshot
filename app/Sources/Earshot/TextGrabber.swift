@@ -12,7 +12,7 @@ struct Grab {
     var source: String
 }
 
-enum GrabUnit: String { case sentence, paragraph, fromHere, window, selection }
+enum GrabUnit: String { case sentence, paragraph, fromHere, section, visible, window, selection }
 
 /// Reads text from any app with the Accessibility API — including web pages in
 /// Safari and Chromium browsers, via text markers — and falls back to OCR.
@@ -73,7 +73,10 @@ final class TextGrabber {
            let g = webGrab(unit, web: web, el: el, at: point) {
             return g
         }
+        // Outside web pages, "visible" is exactly what OCR sees.
+        if unit == .visible { return nil }
         if let g = textAreaGrab(unit, el: el, at: point) { return g }
+        if unit == .section { return nil }
         if unit == .window, let win = attrElement(el, kAXWindowAttribute) {
             let text = collectText(win, limit: maxChars)
             return text.isEmpty ? nil : Grab(text: text, frame: frame(win), source: "window tree")
@@ -124,13 +127,20 @@ final class TextGrabber {
             if let start = attr(web, "AXStartTextMarker"), let end = attr(web, "AXEndTextMarker") {
                 range = AXTextMarkerRangeCreate(nil, start as! AXTextMarker, end as! AXTextMarker)
             }
+        case .section:
+            // Join the section's blocks with line breaks so a heading isn't glued to its text.
+            guard let (r, text) = sectionRange(of: el, web: web) else { return nil }
+            return Grab(text: String(text.prefix(maxChars)), frame: paramRect(web, "AXBoundsForTextMarkerRange", r), source: "web section")
+        case .visible:
+            let text = visibleText(web: web)
+            return text.isEmpty ? nil : Grab(text: text, frame: nil, source: "web visible")
         case .selection:
             return nil
         }
         guard let range, var text = paramString(web, "AXStringForTextMarkerRange", range) else { return nil }
         text = String(text.prefix(maxChars)).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return nil }
-        let rect = unit == .paragraph || unit == .sentence ? paramRect(web, "AXBoundsForTextMarkerRange", range) : nil
+        let rect = [.paragraph, .sentence, .section].contains(unit) ? paramRect(web, "AXBoundsForTextMarkerRange", range) : nil
         return Grab(text: text, frame: rect, source: "web text markers")
     }
 
@@ -151,6 +161,71 @@ final class TextGrabber {
             cur = parent
         }
         return best
+    }
+
+    /// The heading-to-heading run of blocks around `el`: find the nearest
+    /// ancestor that has headings among its children, then take the children
+    /// from the heading before the pointer up to the next heading.
+    private func sectionRange(of el: AXUIElement, web: AXUIElement) -> (CFTypeRef, String)? {
+        var child = el
+        for _ in 0..<14 {
+            guard let parent = attrElement(child, kAXParentAttribute), role(parent) != "AXWindow" else { return nil }
+            let kids = children(parent)
+            let isHeading = { (k: AXUIElement) in self.role(k) == "AXHeading" || self.children(k).first.map { self.role($0) == "AXHeading" } == true }
+            if let at = kids.firstIndex(where: { CFEqual($0, child) }), kids.contains(where: isHeading) {
+                var start = at
+                while start > 0, !isHeading(kids[start]) { start -= 1 }
+                var end = at
+                while end + 1 < kids.count, !isHeading(kids[end + 1]) { end += 1 }
+                let ranges = kids[start...end].compactMap { paramValue(web, "AXTextMarkerRangeForUIElement", $0) }
+                guard let first = ranges.first, let last = ranges.last else { return nil }
+                let text = ranges.compactMap { paramString(web, "AXStringForTextMarkerRange", $0)?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }.joined(separator: "\n")
+                let whole = AXTextMarkerRangeCreate(nil, AXTextMarkerRangeCopyStartMarker(first as! AXTextMarkerRange),
+                                                    AXTextMarkerRangeCopyEndMarker(last as! AXTextMarkerRange))
+                return (whole, text)
+            }
+            if role(parent) == "AXWebArea" { return nil }
+            child = parent
+        }
+        return nil
+    }
+
+    /// Text on screen: the page's text pieces whose frames fall inside the
+    /// visible part of the page, in reading order. Pieces on the same line or
+    /// in the same paragraph are joined with spaces, separate blocks with breaks.
+    private func visibleText(web: AXUIElement) -> String {
+        guard var rect = frame(web) else { return "" }
+        if let window = attrElement(web, kAXWindowAttribute), let wf = frame(window) { rect = rect.intersection(wf) }
+        guard rect.width > 0, rect.height > 0 else { return "" }
+        var pieces: [(String, CGRect)] = []
+        var visited = 0
+        func walk(_ el: AXUIElement) {
+            guard visited < 6000 else { return }
+            visited += 1
+            if role(el) == "AXStaticText" {
+                if let f = frame(el), f.intersects(rect), let t = string(el, kAXValueAttribute)?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty {
+                    pieces.append((t, f))
+                }
+                return
+            }
+            // Skip whole subtrees that are scrolled out of view.
+            if let f = frame(el), f.height > 0, !f.intersects(rect) { return }
+            for c in children(el) { walk(c) }
+        }
+        walk(web)
+        var out = ""
+        var prev: CGRect?
+        for (t, f) in pieces {
+            if let p = prev {
+                let sameLine = abs(f.minY - p.minY) < p.height * 0.5
+                let wrapped = f.minY - p.maxY < p.height * 0.6 && f.minY > p.minY
+                out += sameLine || wrapped ? " " : "\n"
+            }
+            out += t
+            prev = f
+        }
+        return out
     }
 
     /// Chromium has no paragraph-range call, but it can find paragraph edges.
@@ -208,6 +283,7 @@ final class TextGrabber {
         case .sentence: .sentence
         case .paragraph: .paragraph
         case .fromHere: .fromHere
+        case .section: .section
         default: .all
         }
         let ns = TextUnits.range(of: u, in: full, at: r.location)
@@ -375,7 +451,7 @@ final class TextGrabber {
                f.width > 100, f.height > 8, f.minY > 80 {
                 found = CGPoint(x: f.minX + min(f.width / 2, 120), y: f.minY + min(f.height / 2, 8))
                 if let web = ancestor(of: el, role: "AXWebArea") {
-                    for unit in [GrabUnit.sentence, .paragraph, .fromHere] {
+                    for unit in [GrabUnit.sentence, .paragraph, .section, .visible, .fromHere] {
                         let t0 = Date()
                         let g = webGrab(unit, web: web, el: el, at: found!)
                         Log.write("sample \(unit.rawValue): \(Int(Date().timeIntervalSince(t0) * 1000)) ms, \(g?.text.count ?? -1) chars, frame=\(String(describing: g?.frame)), starts \"\(g?.text.prefix(25) ?? "")\"")
@@ -435,13 +511,17 @@ final class TextGrabber {
         let lines = await recognize(image, in: windowFrame)
         let blocks = OCRLayout.blocks(lines)
         guard !blocks.isEmpty else { return nil }
-        if unit == .window {
+        if unit == .window || unit == .visible {
             return Grab(text: blocks.map(\.text).joined(separator: "\n"), frame: windowFrame, source: "OCR")
         }
         guard let i = OCRLayout.blockIndex(at: point, in: blocks) else { return nil }
         switch unit {
         case .fromHere:
             return Grab(text: blocks[i...].map(\.text).joined(separator: "\n"), frame: blocks[i].rect, source: "OCR")
+        case .section:
+            let r = OCRLayout.sectionRange(blocks, around: i)
+            let rect = blocks[r].dropFirst().reduce(blocks[r.lowerBound].rect) { $0.union($1.rect) }
+            return Grab(text: blocks[r].map(\.text).joined(separator: "\n"), frame: rect, source: "OCR")
         case .sentence:
             return Grab(text: TextUnits.substring(.sentence, in: blocks[i].text, at: 0), frame: blocks[i].rect, source: "OCR")
         default:

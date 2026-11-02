@@ -67,8 +67,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.statusItem.button?.image = NSImage(systemSymbolName: state == .idle ? "headphones" : "waveform",
                                                     accessibilityDescription: "Earshot")
         }
-        settings.$speed.combineLatest(settings.$volume).sink { [weak self] _, _ in
+        settings.$volume.sink { [weak self] _ in
             DispatchQueue.main.async { self?.reader.applyAudioSettings() }
+        }.store(in: &bag)
+        // Speed: the player follows at once; regeneration waits until the slider rests.
+        settings.$speed.dropFirst().sink { [weak self] _ in
+            DispatchQueue.main.async { self?.reader.applyAudioSettings() }
+        }.store(in: &bag)
+        settings.$speed.dropFirst().debounce(for: .milliseconds(400), scheduler: DispatchQueue.main).sink { [weak self] _ in
+            self?.reader.speedChanged()
         }.store(in: &bag)
 
         // Trackpads go away across sleep and when a Magic Trackpad connects.
@@ -115,6 +122,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .sentence: grabAndRead(.sentence)
         case .fromHere: grabAndRead(.fromHere)
         case .window: grabAndRead(.window)
+        case .section: grabAndRead(.section)
+        case .visible: grabAndRead(.visible)
         case .selection:
             if let sel = grabber.selection() { start(sel) } else { reader.flash("Nothing selected") }
         case .pauseResume: reader.togglePause()
@@ -211,7 +220,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.addItem(withTitle: status, action: nil, keyEquivalent: "").isEnabled = false
         menu.addItem(.separator())
-        for action: ReadAction in [.smartRead, .fromHere, .window, .summarize] {
+        for action: ReadAction in [.smartRead, .section, .fromHere, .visible, .window, .summarize] {
             add(menu, action.title, action)
         }
         add(menu, pageWatcher.pinnedTitle.map { "Stop auto-reading “\($0.prefix(40))”" } ?? "Auto-read new text on this page", .autoReadToggle)

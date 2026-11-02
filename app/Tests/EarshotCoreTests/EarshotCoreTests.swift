@@ -36,6 +36,12 @@ final class TextPrepTests: XCTestCase {
         XCTAssertEqual(parts.joined(separator: "\n"), text)
     }
 
+    func testSectionUnitRunsHeadingToHeading() {
+        let text = "Intro\nSome intro text here.\nSetup\nInstall it first.\nThen run it.\nUsage\nUse it daily."
+        XCTAssertEqual(TextUnits.substring(.section, in: text, at: text.distance(from: text.startIndex, to: text.range(of: "Then")!.lowerBound)),
+                       "Setup\nInstall it first.\nThen run it.")
+    }
+
     func testSentenceAndParagraphUnits() {
         let text = "First one. Second one here.\nOther paragraph."
         XCTAssertEqual(TextUnits.substring(.sentence, in: text, at: 14), "Second one here.")

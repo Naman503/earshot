@@ -8,7 +8,7 @@
 |---|---|
 | Point and tap | Four-finger tap on the trackpad reads the paragraph under the pointer. Double-tap reads from there to the end. No selecting. |
 | Works everywhere | One app for every program, including browsers (Safari, Chrome, Brave, Arc, Edge) — no extension. Falls back to on-screen OCR for images and PDFs. |
-| Natural and fast | Kokoro-82M runs locally on Apple Silicon (~12× real time, first words in ~0.3 s). 28 English voices, 0.7–4× speed. Apple voices as a fallback. |
+| Natural and fast | Kokoro-82M runs locally on Apple Silicon (~12× real time, first words in ~0.3 s). Speech is generated at its natural pace and sped up with WSOLA, which keeps words clear at 2–3× (Whisper misheard 8% of words at 2× vs 21% before). 28 English voices, grouped by clarity at speed; click one to hear it. |
 | Headphones only | Never speaks on the Mac speakers unless you allow it. Pauses when headphones disconnect, resumes when they're back. |
 | Notification announcer | "WhatsApp. Rahul. Read it?" — answer yes/no by voice, a four-finger tap or ⌃⌥N. Short messages are read straight away, long ones summarized on-device first (Apple Intelligence). Per-app rules and quiet hours. |
 | Gist first | A 3–5 sentence spoken summary of any page or selection from Apple's on-device model (long pages summarized section by section), then "Read the whole page?" — starting at the article, not the site menu. |
@@ -22,6 +22,8 @@
 |---|---|---|
 | Read selection, or paragraph under pointer | ⌃⌥R | 4-finger tap (paragraph) |
 | Read from pointer to the end | ⌃⌥A | 4-finger double-tap |
+| Read the whole section (heading to heading) | ⌃⌥B | |
+| Read everything visible on screen | ⌃⌥V | |
 | Read the whole window | ⌃⌥W | |
 | Pause / resume | ⌃⌥P | 3-finger double-tap |
 | Stop | ⌃⌥S or Esc while reading | 5-finger tap |

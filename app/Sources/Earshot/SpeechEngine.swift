@@ -95,14 +95,14 @@ final class KokoroEngine: ObservableObject {
     }
 
     /// Asks for audio; the returned id can be cancelled.
-    func synthesize(_ text: String, voice: String, speed: Double) -> (id: Int, result: Task<SpeechAudio?, Never>) {
+    func synthesize(_ text: String, voice: String, speed: Double = 1, stretch: Double = 1) -> (id: Int, result: Task<SpeechAudio?, Never>) {
         let id = nextID
         nextID += 1
         let task = Task { @MainActor [weak self] () -> SpeechAudio? in
             guard let self, self.status == .ready, id >= self.floor else { return nil }
             return await withCheckedContinuation { c in
                 self.waiting[id] = c
-                self.send(["op": "synth", "id": id, "text": text, "voice": voice, "speed": speed])
+                self.send(["op": "synth", "id": id, "text": text, "voice": voice, "speed": speed, "stretch": stretch])
             }
         }
         return (id, task)

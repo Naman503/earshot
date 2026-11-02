@@ -3,6 +3,7 @@ name = "earshot-engine"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
+    "audiotsm>=0.1.2",
     "misaki[en]>=0.9.4",
     "mlx-audio>=0.6.3",
 ]

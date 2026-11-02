@@ -67,6 +67,8 @@ final class Settings: ObservableObject {
             .smartRead: KeyCombo(keyCode: UInt32(kVK_ANSI_R), modifiers: ctrlOpt),
             .fromHere: KeyCombo(keyCode: UInt32(kVK_ANSI_A), modifiers: ctrlOpt),
             .window: KeyCombo(keyCode: UInt32(kVK_ANSI_W), modifiers: ctrlOpt),
+            .section: KeyCombo(keyCode: UInt32(kVK_ANSI_B), modifiers: ctrlOpt),
+            .visible: KeyCombo(keyCode: UInt32(kVK_ANSI_V), modifiers: ctrlOpt),
             .pauseResume: KeyCombo(keyCode: UInt32(kVK_ANSI_P), modifiers: ctrlOpt),
             .stop: KeyCombo(keyCode: UInt32(kVK_ANSI_S), modifiers: ctrlOpt),
             .nextSentence: KeyCombo(keyCode: UInt32(kVK_RightArrow), modifiers: ctrlOpt),

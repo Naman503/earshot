@@ -1,7 +1,9 @@
 """Earshot speech engine: a resident Kokoro (MLX) process driven over stdio.
 
 Protocol (one JSON object per line on stdin):
-  {"op": "synth", "id": 7, "text": "...", "voice": "af_heart", "speed": 1.2}
+  {"op": "synth", "id": 7, "text": "...", "voice": "af_heart", "speed": 1.0, "stretch": 2.0}
+      speed = Kokoro's own pace; stretch = WSOLA time-compression on top. Measured with
+      Whisper, natural pace + WSOLA is far clearer at 2-3x than asking Kokoro to rush.
   {"op": "cancel_before", "id": 7}   drop queued requests with a smaller id
   {"op": "voices"}
   {"op": "ping"}
@@ -38,6 +40,17 @@ def send(header, payload=b""):
         PROTO.write(json.dumps(header).encode() + b"\n")
         if payload:
             PROTO.write(payload)
+
+
+def time_stretch(audio, rate):
+    """WSOLA time-scale modification: faster speech, same pitch, no phasiness."""
+    if abs(rate - 1.0) < 0.01 or audio.size == 0:
+        return audio
+    from audiotsm import wsola
+    from audiotsm.io.array import ArrayReader, ArrayWriter
+    writer = ArrayWriter(1)
+    wsola(1, speed=rate, frame_length=512, synthesis_hop=128).run(ArrayReader(audio.reshape(1, -1)), writer)
+    return writer.data[0].astype("float32")
 
 
 def lang_for(voice):
@@ -114,6 +127,7 @@ def main():
                 )
             ]
             audio = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
+            audio = time_stretch(audio, float(msg.get("stretch", 1.0)))
             data = audio.astype("<f4").tobytes()
             send({"type": "audio", "id": msg["id"], "sr": SAMPLE_RATE, "bytes": len(data)}, data)
         except Exception as exc:  # keep serving after a bad request

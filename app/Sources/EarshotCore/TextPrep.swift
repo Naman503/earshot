@@ -116,7 +116,7 @@ extension TextPrep {
 
 /// Finds the sentence / paragraph / rest-of-text around a character index.
 public enum TextUnits {
-    public enum Unit: Sendable { case sentence, paragraph, fromHere, all }
+    public enum Unit: Sendable { case sentence, paragraph, fromHere, section, all }
 
     public static func range(of unit: Unit, in text: String, at offset: Int) -> NSRange {
         let ns = text as NSString
@@ -125,6 +125,23 @@ public enum TextUnits {
         switch unit {
         case .all:
             return NSRange(location: 0, length: ns.length)
+        case .section:
+            // Plain text has no markup: a heading is a short line without end punctuation.
+            func isHeading(_ r: NSRange) -> Bool {
+                let line = ns.substring(with: r).trimmingCharacters(in: .whitespacesAndNewlines)
+                return !line.isEmpty && line.count < 80 && !".!?:;,".contains(line.last!)
+            }
+            var start = ns.paragraphRange(for: NSRange(location: i, length: 0))
+            while start.location > 0, !isHeading(start) {
+                start = ns.paragraphRange(for: NSRange(location: start.location - 1, length: 0))
+            }
+            var end = ns.paragraphRange(for: NSRange(location: i, length: 0))
+            while NSMaxRange(end) < ns.length {
+                let next = ns.paragraphRange(for: NSRange(location: NSMaxRange(end), length: 0))
+                if isHeading(next) { break }
+                end = next
+            }
+            return NSRange(location: start.location, length: NSMaxRange(end) - start.location)
         case .paragraph:
             return ns.paragraphRange(for: NSRange(location: i, length: 0))
         case .sentence, .fromHere:

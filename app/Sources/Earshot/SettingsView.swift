@@ -42,10 +42,35 @@ private struct VoiceTab: View {
             LabeledContent("Status") { Text(statusText).foregroundStyle(.secondary) }
 
             if settings.engine == .kokoro {
-                Picker("Voice", selection: $settings.voice) {
-                    ForEach(voiceGroups, id: \.0) { group, voices in
-                        Section(group) {
-                            ForEach(voices, id: \.self) { Text(Self.displayName($0)).tag($0) }
+                LabeledContent("Speed") {
+                    HStack {
+                        Slider(value: $settings.speed, in: 0.7...4.0, step: 0.05)
+                        Text(String(format: "%.2f×", settings.speed)).monospacedDigit().frame(width: 52)
+                    }
+                }
+                Text("Click a voice to hear it at this speed.").font(.caption).foregroundStyle(.secondary)
+                ForEach(VoiceCatalog.grouped(available: kokoro.voices), id: \.title) { group in
+                    Section {
+                        ForEach(group.voices, id: \.self) { id in
+                            Button {
+                                settings.voice = id
+                                preview()
+                            } label: {
+                                HStack {
+                                    Image(systemName: settings.voice == id ? "checkmark.circle.fill" : "circle")
+                                        .foregroundStyle(settings.voice == id ? Color.accentColor : .secondary)
+                                    Text(VoiceCatalog.label(id))
+                                    Spacer()
+                                    Image(systemName: "play.circle").foregroundStyle(.secondary)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    } header: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(group.title)
+                            if !group.detail.isEmpty { Text(group.detail).font(.caption).foregroundStyle(.secondary) }
                         }
                     }
                 }
@@ -60,10 +85,12 @@ private struct VoiceTab: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
 
-            LabeledContent("Speed") {
-                HStack {
-                    Slider(value: $settings.speed, in: 0.7...4.0, step: 0.05)
-                    Text(String(format: "%.2f×", settings.speed)).monospacedDigit().frame(width: 52)
+            if settings.engine != .kokoro {
+                LabeledContent("Speed") {
+                    HStack {
+                        Slider(value: $settings.speed, in: 0.7...4.0, step: 0.05)
+                        Text(String(format: "%.2f×", settings.speed)).monospacedDigit().frame(width: 52)
+                    }
                 }
             }
             LabeledContent("Volume") {
@@ -75,9 +102,7 @@ private struct VoiceTab: View {
             Text("Above 100% boosts speech louder than the system volume, so it stands out over other sounds.")
                 .font(.caption).foregroundStyle(.secondary)
 
-            Button("Play a sample") {
-                reader.read("Hi! This is how I sound at \(String(format: "%.2g", settings.speed)) times speed. I'll read anything under your pointer.", source: "sample")
-            }
+            Button("Play a sample", action: preview)
         }
         .formStyle(.grouped)
     }
@@ -89,6 +114,10 @@ private struct VoiceTab: View {
         case .notInstalled: "Not installed — run scripts/install-engine.sh"
         case .failed(let m): "Failed: \(m)"
         }
+    }
+
+    private func preview() {
+        reader.read("This is \(VoiceCatalog.label(settings.voice).components(separatedBy: " ·").first ?? "me") at \(String(format: "%.2g", settings.speed)) times speed. The quarterly report shows revenue grew by eighteen percent this year.", source: "sample")
     }
 
     private var voiceGroups: [(String, [String])] {

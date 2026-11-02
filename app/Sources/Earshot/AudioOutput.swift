@@ -173,12 +173,14 @@ final class AudioOutput: ObservableObject {
         gain.globalGain = volume > 1 ? Float((volume - 1) * 12) : 0
     }
 
-    func buffer(for audio: SpeechAudio) -> AVAudioPCMBuffer? {
+    /// `leadIn` seconds of silence first, so Bluetooth earbuds are awake before the first word.
+    func buffer(for audio: SpeechAudio, leadIn: Double = 0) -> AVAudioPCMBuffer? {
         var samples = audio.samples
         if audio.sampleRate != format.sampleRate {
             samples = Self.resample(samples, from: audio.sampleRate, to: format.sampleRate)
         }
         samples = Self.trimSilence(samples, rate: format.sampleRate)
+        if leadIn > 0, !samples.isEmpty { samples = [Float](repeating: 0, count: Int(format.sampleRate * leadIn)) + samples }
         guard !samples.isEmpty, let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)) else { return nil }
         buf.frameLength = AVAudioFrameCount(samples.count)
         samples.withUnsafeBufferPointer { buf.floatChannelData![0].update(from: $0.baseAddress!, count: samples.count) }
@@ -191,11 +193,12 @@ final class AudioOutput: ObservableObject {
         currentDevice = 0
     }
 
-    /// Keeps ~60 ms before and ~140 ms after speech so fast reading stays tight.
-    static func trimSilence(_ s: [Float], rate: Double, threshold: Float = 0.01) -> [Float] {
+    /// Keeps ~100 ms before and ~140 ms after speech so fast reading stays tight
+    /// without clipping soft first sounds (s, f, h).
+    static func trimSilence(_ s: [Float], rate: Double, threshold: Float = 0.003) -> [Float] {
         guard let first = s.firstIndex(where: { abs($0) > threshold }),
               let last = s.lastIndex(where: { abs($0) > threshold }) else { return [] }
-        let start = max(0, first - Int(rate * 0.06))
+        let start = max(0, first - Int(rate * 0.10))
         let end = min(s.count, last + Int(rate * 0.14))
         return Array(s[start..<end])
     }
