@@ -75,6 +75,16 @@ final class Ducker {
 
     private var releaseToken = 0
 
+    /// Tears the tap down at once (before Mac dictation starts, so nothing of
+    /// ours sits in the audio path).
+    func stopNow() {
+        guard aggregateID != kAudioObjectUnknown || tapID != kAudioObjectUnknown else { return }
+        active = false
+        releaseToken += 1
+        teardown()
+        Log.write("duck: stopped for dictation")
+    }
+
     /// Built and idle, passing audio through at full volume.
     var isLingering: Bool { built && !active }
 

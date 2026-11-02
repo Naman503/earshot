@@ -19,7 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private(set) var announcer: Announcer!
     let notifications = NotificationWatcher()
     private(set) var pageWatcher: PageWatcher!
-    private(set) var dictation: Dictation!
+    private var macDictation: MacDictation!
     private var hud: HUD!
     private var statusItem: NSStatusItem!
     private var settingsWindow: NSWindow?
@@ -32,20 +32,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         announcer = Announcer(settings: settings, reader: reader)
         notifications.onBanner = { [weak self] in self?.announcer.handle($0) }
         pageWatcher = PageWatcher(settings: settings, reader: reader, grabber: grabber)
-        dictation = Dictation(settings: settings, kokoro: kokoro, reader: reader)
-        dictation.onStateChange = { [weak self] state in
-            guard let self else { return }
-            self.hotKeys.setEscapeActive(state == .listening || (self.reader.isActive && self.settings.escapeStops))
-        }
+        macDictation = MacDictation(reader: reader)
         HotKeys.onRelease = { [weak self] action in
-            if action == .dictate { self?.dictation.released() }
+            if action == .dictate { self?.macDictation.released() }
             if action == .boost { self?.boostReleased() }
         }
-        // Load the dictation model once the engine is up, so the first dictation is quick.
-        kokoro.$status.removeDuplicates().sink { [weak self] status in
-            guard let self, status == .ready, self.settings.dictationEnabled else { return }
-            self.kokoro.warmSpeechToText(model: self.settings.dictationModel)
-        }.store(in: &bag)
         Log.write("launch \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") ?? "") accessibility=\(AXIsProcessTrusted())")
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -163,8 +154,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if let sel = grabber.selection() { start(sel) } else { reader.flash("Nothing selected") }
         case .pauseResume: reader.togglePause()
         case .stop:
-            if dictation.state == .listening { dictation.cancel() } else if !announcer.dismissPending() { reader.stop() }
-        case .dictate: dictation.pressed()
+            if !announcer.dismissPending() { reader.stop() }
+        case .dictate: macDictation.pressed()
         case .boost:
             boostPressedAt = Date()
             reader.setBoost(!reader.boosted)
@@ -280,7 +271,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for action: ReadAction in [.smartRead, .section, .fromHere, .visible, .window, .summarize] {
             add(menu, action.title, action)
         }
-        add(menu, dictation.state == .listening ? "Stop dictation" : "Start dictation", .dictate)
+        add(menu, "Start Mac dictation", .dictate)
         add(menu, pageWatcher.pinnedTitle.map { "Stop auto-reading “\($0.prefix(40))”" } ?? "Auto-read new text on this page", .autoReadToggle)
         if reader.isActive {
             menu.addItem(.separator())
@@ -378,7 +369,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             w.isReleasedWhenClosed = false
             w.contentView = NSHostingView(rootView: SettingsView()
                 .environmentObject(settings).environmentObject(kokoro).environmentObject(audio).environmentObject(reader)
-                .environmentObject(announcer).environmentObject(pageWatcher).environmentObject(dictation))
+                .environmentObject(announcer).environmentObject(pageWatcher))
             w.setContentSize(NSSize(width: 920, height: 680))
             w.center()
             settingsWindow = w
@@ -460,9 +451,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         Log.write("watch-probe: url=\(info?.url ?? "nil") chars=\(info?.text.count ?? -1) in \(Int(Date().timeIntervalSince(t0) * 1000)) ms")
                     }
                 }
-            case "--dictate-front":
-                // Like --dictate-test, but types into whatever is focused after 4 s.
-                waitForEngine { DispatchQueue.main.asyncAfter(deadline: .now() + 4) { self.dictationSelfTest(wav: value, intoFront: true) } }
             case "--para-test":
                 // "App|needle": paragraph reach around the text containing needle (reads nothing aloud).
                 let bits = value.split(separator: "|", maxSplits: 1).map(String.init)
@@ -525,11 +513,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     }
                     DispatchQueue.main.asyncAfter(deadline: .now() + Double(words.count) * 0.25 + 0.5) { self.hud.showWord(nil, locator: nil) }
                 }
-            case "--mic-test":
-                waitForEngine { self.dictation.micTest(seconds: Double(value) ?? 3) }
-            case "--dictate-test":
-                // Transcribes a WAV and types it into a test field: checks engine + paste end to end.
-                waitForEngine { self.dictationSelfTest(wav: value) }
+            case "--macdictation-test":
+                // Starts Mac dictation in Earshot's own test window for 3 s and logs how fast it listened.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    let window = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 500, height: 80), styleMask: [.titled], backing: .buffered, defer: false)
+                    window.title = "Earshot dictation check"
+                    let field = NSTextField(frame: NSRect(x: 10, y: 20, width: 480, height: 40))
+                    window.contentView?.addSubview(field)
+                    NSApp.activate(ignoringOtherApps: true)
+                    window.makeKeyAndOrderFront(nil)
+                    window.makeFirstResponder(field)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        Log.write("macdictation-test: input before: \(MacDictation.listeningApps())")
+                        self.macDictation.pressed()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                            self.macDictation.pressed()
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { window.close() }
+                        }
+                    }
+                }
             case "--settings":
                 openSettings(tab: SettingsTab(rawValue: value) ?? .howTo)
             case "--render-settings":
@@ -549,34 +551,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             default:
                 break
-            }
-        }
-    }
-
-    private func dictationSelfTest(wav: String, intoFront: Bool = false) {
-        guard let file = try? AVAudioFile(forReading: URL(fileURLWithPath: wav)),
-              let buf = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)),
-              (try? file.read(into: buf)) != nil, let ch = buf.floatChannelData else { Log.write("dictate-test: can't read \(wav)"); return }
-        var samples = Array(UnsafeBufferPointer(start: ch[0], count: Int(buf.frameLength)))
-        if file.processingFormat.sampleRate != 16_000 { samples = AudioOutput.resample(samples, from: file.processingFormat.sampleRate, to: 16_000) }
-        let window = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 600, height: 80), styleMask: [.titled], backing: .buffered, defer: false)
-        window.title = "Earshot dictation test"
-        let field = NSTextField(frame: NSRect(x: 10, y: 20, width: 580, height: 40))
-        window.contentView?.addSubview(field)
-        if !intoFront {
-            NSApp.activate(ignoringOtherApps: true)
-            window.makeKeyAndOrderFront(nil)
-            window.makeFirstResponder(field)
-        }
-        Task {
-            let t0 = Date()
-            let text = await kokoro.transcribe(samples, model: settings.dictationModel, language: settings.dictationLanguage)
-            Log.write("dictate-test: transcribed in \(Int(Date().timeIntervalSince(t0) * 1000)) ms: \(text ?? "nil")")
-            guard let text else { return }
-            Dictation.type(text)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                Log.write("dictate-test: field now contains \"\(field.stringValue)\"")
-                window.close()
             }
         }
     }

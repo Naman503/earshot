@@ -25,7 +25,7 @@
 	<key>NSAudioCaptureUsageDescription</key>
 	<string>Earshot turns other apps down while it reads to you, then back up.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Earshot listens when you dictate, and for a few seconds after asking "Read it?" so you can answer by voice.</string>
+	<string>Earshot listens for a few seconds after asking "Read it?" so you can answer by voice.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Earshot recognizes "yes" and "no" on this Mac when you answer a notification prompt.</string>
 	<key>NSHighResolutionCapable</key>

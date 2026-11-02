@@ -1,7 +1,7 @@
 #!/bin/bash
 # Installs the Kokoro speech engine where Earshot looks for it:
 #   ~/Library/Application Support/Earshot/engine
-# Needs uv (https://docs.astral.sh/uv/). Downloads ~1.8 GB (voice + dictation models, Python packages) once;
+# Needs uv (https://docs.astral.sh/uv/). Downloads ~1 GB (voice model, Python packages) once;
 # after that the engine runs fully offline.
 set -euo pipefail
 SRC="$(cd "$(dirname "$0")/../engine" && pwd)"
@@ -19,8 +19,6 @@ m = load_model("prince-canuma/Kokoro-82M")
 for voice in ("af_heart", "bf_emma"):
     for _ in m.generate("Installed.", voice=voice, lang_code=voice[0]):
         pass
-from mlx_audio.stt.utils import load_model as load_stt
-load_stt("mlx-community/parakeet-tdt-0.6b-v2")
-print("Kokoro voice and Parakeet dictation models ready")
+print("Kokoro voice ready")
 PY
 echo "Installed to $DEST — restart Earshot to use it."

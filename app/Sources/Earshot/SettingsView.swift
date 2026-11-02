@@ -5,7 +5,7 @@ import Speech
 import SwiftUI
 
 enum SettingsTab: String, CaseIterable, Identifiable {
-    case howTo, general, voice, reading, gestures, shortcuts, dictation, notifications, autoRead, output, media
+    case howTo, general, voice, reading, gestures, shortcuts, notifications, autoRead, output, media
     var id: String { rawValue }
 
     var title: String {
@@ -16,7 +16,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .reading: "Reading"
         case .gestures: "Trackpad gestures"
         case .shortcuts: "Keyboard shortcuts"
-        case .dictation: "Dictation"
         case .notifications: "Notifications"
         case .autoRead: "Auto-read"
         case .output: "Headphones & output"
@@ -32,7 +31,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .reading: "text.alignleft"
         case .gestures: "hand.tap"
         case .shortcuts: "keyboard"
-        case .dictation: "mic"
         case .notifications: "bell.badge"
         case .autoRead: "text.badge.plus"
         case .output: "headphones"
@@ -48,7 +46,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .reading: "How much a tap reads, what to skip, pronunciations, calls"
         case .gestures: "What each multi-finger tap does"
         case .shortcuts: "Change any keyboard shortcut"
-        case .dictation: "Speech to text, typed where your cursor is"
         case .notifications: "Which notifications are read and how"
         case .autoRead: "Read new text on chosen sites and apps"
         case .output: "Only speak into headphones, and which ones"
@@ -97,7 +94,6 @@ struct SettingsView: View {
         case .reading: ReadingTab()
         case .gestures: GesturesTab()
         case .shortcuts: ShortcutsTab()
-        case .dictation: DictationTab()
         case .notifications: NotificationsTab()
         case .autoRead: AutoReadTab()
         case .output: OutputTab()
@@ -136,7 +132,7 @@ private struct HowToTab: View {
                 row(.boost, "Jumps to your boost speed and back, smoothly. Hold it for a short burst.")
             }
             Section("Dictation") {
-                row(.dictate, "Hold the keys and talk, then let go. Or tap once to start and once to stop. Words are typed wherever your cursor is. Esc cancels.")
+                row(.dictate, "Starts the Mac's own dictation: hold the keys and talk, then let go, or tap to start and stop. Earshot stops reading and gets out of the audio path first, and starts dictation again if the microphone doesn't open.")
             }
             Section("Notifications and pages") {
                 row(.readNotification, "When it asks “Read it?”, this — or a four-finger tap, or saying “yes” — reads it.")
@@ -283,51 +279,6 @@ private struct VoiceTab: View {
     static func displayName(_ id: String) -> String {
         let name = id.split(separator: "_").dropFirst().joined(separator: " ").capitalized
         return id == "af_heart" ? "\(name) (default)" : name
-    }
-}
-
-// MARK: Dictation
-
-private struct DictationTab: View {
-    @EnvironmentObject var settings: Settings
-    @State private var micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
-
-    var body: some View {
-        Form {
-            Toggle("Dictation", isOn: $settings.dictationEnabled)
-            Group {
-                LabeledContent("Shortcut") {
-                    Text(settings.shortcuts[.dictate].map(HotKeys.describe) ?? "None").foregroundStyle(.secondary)
-                }
-                Text("Hold the shortcut and talk, then let go — or tap it once to start and again to stop. Esc cancels. Your words are typed wherever the cursor is.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Picker("Recognizer", selection: $settings.dictationModel) {
-                    Text("Parakeet — English, fastest and most accurate").tag("parakeet")
-                    Text("Whisper — Hindi and mixed Hindi-English").tag("whisper")
-                }
-                if settings.dictationModel == "whisper" {
-                    Picker("Language", selection: $settings.dictationLanguage) {
-                        Text("English").tag("en")
-                        Text("Hindi").tag("hi")
-                        Text("Detect automatically").tag("")
-                    }
-                }
-                Toggle("Use the Mac's own microphone (keeps earbuds in full sound quality)", isOn: $settings.dictationBuiltInMic)
-                Toggle("Play a sound when listening starts and stops", isOn: $settings.dictationSounds)
-                if micStatus != .authorized {
-                    Button("Allow microphone…") {
-                        AVCaptureDevice.requestAccess(for: .audio) { ok in
-                            DispatchQueue.main.async { micStatus = ok ? .authorized : .denied }
-                        }
-                    }
-                }
-                Text("Runs entirely on this Mac: about 0.1 seconds to transcribe 15 seconds of speech on an M4.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            .disabled(!settings.dictationEnabled)
-        }
-        .formStyle(.grouped)
-        .onAppear { micStatus = AVCaptureDevice.authorizationStatus(for: .audio) }
     }
 }
 
@@ -770,7 +721,7 @@ private struct GeneralTab: View {
                 row("Screen Recording", "Optional: reads text in images, PDFs and apps that don't expose it.", permissions.screenRecording) {
                     permissions.requestScreenRecording()
                 }
-                row("Microphone", "For dictation and answering “Read it?” by voice.", mic) {
+                row("Microphone", "For answering “Read it?” by voice.", mic) {
                     AVCaptureDevice.requestAccess(for: .audio) { ok in DispatchQueue.main.async { mic = ok } }
                 }
                 row("Speech recognition", "For answering “Read it?” by voice (on this Mac).", speech) {
@@ -786,7 +737,7 @@ private struct GeneralTab: View {
                 }
             }
             Section("Voice engine") {
-                LabeledContent("Kokoro voice and Parakeet dictation") {
+                LabeledContent("Kokoro voice") {
                     switch kokoro.status {
                     case .ready: Label("Running", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
                     case .starting: Label("Starting…", systemImage: "hourglass").foregroundStyle(.secondary)
@@ -794,7 +745,7 @@ private struct GeneralTab: View {
                     case .failed(let m): Text(m).foregroundStyle(.red)
                     }
                 }
-                Text("Runs entirely on this Mac. Nothing you read, hear or dictate leaves it.").font(.caption).foregroundStyle(.secondary)
+                Text("Runs entirely on this Mac. Nothing you read or hear leaves it.").font(.caption).foregroundStyle(.secondary)
             }
             Toggle("Open at login", isOn: $launchAtLogin)
                 .onChange(of: launchAtLogin) { _, on in
