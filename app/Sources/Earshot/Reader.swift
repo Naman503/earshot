@@ -36,6 +36,13 @@ final class Reader: ObservableObject {
     /// Speed baked into this reading's audio by the engine (WSOLA); the player
     /// only covers the difference after a speed change, until chunks regenerate.
     private var bakedSpeed = 1.0
+    /// Speed each prepared chunk was generated at (Kokoro bakes the speed in).
+    private var bakedFor: [Int: Double] = [:]
+    /// Boost shortcut on: reading at `settings.boostSpeed`.
+    @Published private(set) var boosted = false
+    private var rampTimer: Timer?
+    /// The speed in use right now.
+    var speed: Double { boosted ? settings.boostSpeed : settings.speed }
     private var usesKokoro = false
     /// First chunk of a reading gets a short silent lead-in.
     private var leadInIndex: Int?
@@ -133,7 +140,8 @@ final class Reader: ObservableObject {
         currentText = parts[index]
         self.onFinish = onFinish
         usesKokoro = settings.engine == .kokoro && kokoro.status == .ready
-        bakedSpeed = usesKokoro ? settings.speed : 1
+        bakedSpeed = usesKokoro ? speed : 1
+        bakedFor = [:]
         leadInIndex = index
         applyAudioSettings()
         if settleFirst {
@@ -224,29 +232,64 @@ final class Reader: ObservableObject {
     }
 
     func changeSpeed(by delta: Double) {
-        settings.speed = (max(0.7, min(4.0, settings.speed + delta)) * 20).rounded() / 20
-        flash(String(format: "Speed %.2g×", settings.speed))
+        let next = (max(0.7, min(4.0, speed + delta)) * 20).rounded() / 20
+        if boosted { settings.boostSpeed = next } else { settings.speed = next }
+        flash(String(format: boosted ? "Boost %.2g×" : "Speed %.2g×", next))
     }
 
-    /// Applies volume, and speed immediately on the player; with Kokoro, the
-    /// upcoming sentences are then regenerated at the new speed for full clarity.
-    func applyAudioSettings() {
-        audio.apply(speedStretch: settings.speed / bakedSpeed, volume: settings.volume)
+    /// Switches between your normal speed and the boost speed, gliding over
+    /// a third of a second without restarting the sentence.
+    func setBoost(_ on: Bool) {
+        guard on != boosted else { return }
+        boosted = on
+        flash(String(format: on ? "Boost %.2g×" : "Normal speed %.2g×", speed))
+        applyAudioSettings(ramp: true)
+        speedChanged()
     }
 
+    /// Applies volume, and speed on the player at once (or gliding, with
+    /// `ramp`); with Kokoro, upcoming sentences are regenerated at the new
+    /// speed by `speedChanged` for full clarity.
+    func applyAudioSettings(ramp: Bool = false) {
+        let head = scheduled.first ?? index
+        let target = speed / (bakedFor[head] ?? bakedSpeed)
+        rampTimer?.invalidate()
+        rampTimer = nil
+        guard ramp, isActive else {
+            audio.apply(speedStretch: target, volume: settings.volume)
+            return
+        }
+        let from = Double(audio.stretch.rate)
+        var step = 0
+        rampTimer = Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { [weak self] t in
+            MainActor.assumeIsolated {
+                guard let self else { t.invalidate(); return }
+                step += 1
+                let f = min(1, Double(step) / 11)
+                let eased = f * f * (3 - 2 * f)
+                self.audio.apply(speedStretch: from + (target - from) * eased, volume: self.settings.volume)
+                if f >= 1 { t.invalidate(); self.rampTimer = nil; self.applyAudioSettings() }
+            }
+        }
+    }
+
+    /// Keeps what's already queued in the player (its speed is corrected on
+    /// the fly) and regenerates the sentences after it at the new speed, so
+    /// the voice never restarts mid-sentence.
     func speedChanged() {
-        applyAudioSettings()
-        guard usesKokoro, isActive, abs(settings.speed - bakedSpeed) > 0.01 else { return }
+        guard usesKokoro, isActive, abs(speed - bakedSpeed) > 0.01 else {
+            if rampTimer == nil { applyAudioSettings() }
+            return
+        }
+        bakedSpeed = speed
         readID += 1
         kokoro.cancelPending()
-        cache = [:]
-        requested = []
+        let keep = Set(scheduled)
+        cache = cache.filter { keep.contains($0.key) }
+        requested = requested.intersection(keep)
         failed = []
-        bakedSpeed = settings.speed
-        let wasPaused = state == .paused
-        restartAt(index, on: nil)
-        applyAudioSettings()
-        if wasPaused { setState(.paused) }
+        if rampTimer == nil { applyAudioSettings() }
+        fill()
     }
 
     private func finishNaturally() {
@@ -283,6 +326,7 @@ final class Reader: ObservableObject {
             guard id == readID else { return }
             if let result, let buffer = audio.buffer(for: result, leadIn: leadIn) {
                 cache[i] = buffer
+                bakedFor[i] = kokoroSession ? stretch : 1
             } else {
                 failed.insert(i)
                 Log.write("read: chunk \(i) produced no audio")
@@ -331,6 +375,8 @@ final class Reader: ObservableObject {
     }
 
     private func show(_ i: Int) {
+        // Chunks made before a speed change carry their old speed; correct it.
+        if rampTimer == nil, let baked = bakedFor[i], abs(Double(audio.stretch.rate) - speed / baked) > 0.01 { applyAudioSettings() }
         position = i + 1
         currentText = chunks[i]
     }

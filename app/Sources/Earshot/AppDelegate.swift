@@ -39,6 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         HotKeys.onRelease = { [weak self] action in
             if action == .dictate { self?.dictation.released() }
+            if action == .boost { self?.boostReleased() }
         }
         // Load the dictation model once the engine is up, so the first dictation is quick.
         kokoro.$status.removeDuplicates().sink { [weak self] status in
@@ -100,6 +101,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settings.$speed.dropFirst().debounce(for: .milliseconds(400), scheduler: DispatchQueue.main).sink { [weak self] _ in
             self?.reader.speedChanged()
         }.store(in: &bag)
+        settings.$boostSpeed.dropFirst().debounce(for: .milliseconds(400), scheduler: DispatchQueue.main).sink { [weak self] _ in
+            self?.reader.speedChanged()
+        }.store(in: &bag)
 
         // Trackpads go away across sleep and when a Magic Trackpad connects.
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
@@ -119,6 +123,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         pageWatcher.start()
         handleDebugArguments()
         if !AXIsProcessTrusted() { openSettings(tab: .general) }
+    }
+
+    private var boostPressedAt = Date.distantPast
+
+    /// Holding the boost key is a burst: back to normal speed on release.
+    private func boostReleased() {
+        if reader.boosted, Date().timeIntervalSince(boostPressedAt) > 0.45 { reader.setBoost(false) }
     }
 
     func applicationWillTerminate(_ note: Notification) {
@@ -153,6 +164,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .stop:
             if dictation.state == .listening { dictation.cancel() } else if !announcer.dismissPending() { reader.stop() }
         case .dictate: dictation.pressed()
+        case .boost:
+            boostPressedAt = Date()
+            reader.setBoost(!reader.boosted)
         case .readNotification: announcer.readLatestOrAnswer()
         case .summarize: summarize()
         case .autoReadToggle: pageWatcher.togglePin()
@@ -448,6 +462,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             case "--dictate-front":
                 // Like --dictate-test, but types into whatever is focused after 4 s.
                 waitForEngine { DispatchQueue.main.asyncAfter(deadline: .now() + 4) { self.dictationSelfTest(wav: value, intoFront: true) } }
+            case "--para-test":
+                // "App|needle": paragraph reach around the text containing needle (reads nothing aloud).
+                let bits = value.split(separator: "|", maxSplits: 1).map(String.init)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    guard bits.count == 2, let el = self.grabber.findText(inApp: bits[0], needle: bits[1]) else { Log.write("para-test: not found"); return }
+                    Log.write("para-test chain:\n\(self.grabber.describeAncestors(el))")
+                    let n = self.grabber.blockNeighbours(of: el)
+                    Log.write("para-test before (last 3):\n\(n?.before.components(separatedBy: "\n").suffix(3).joined(separator: "\n") ?? "nil")")
+                    Log.write("para-test after:\n\(n?.after ?? "nil")")
+                    for (b, a) in [(1, 1), (0, -1), (2, 0)] {
+                        let t = TextUnits.expand(current: "<<CURRENT>>", before: n?.before ?? "", after: n?.after ?? "", paragraphsBefore: b, paragraphsAfter: a)
+                        Log.write("para-test reach \(b) up / \(a) down:\n\(t)")
+                    }
+                }
+            case "--mic-test":
+                waitForEngine { self.dictation.micTest(seconds: Double(value) ?? 3) }
             case "--dictate-test":
                 // Transcribes a WAV and types it into a test field: checks engine + paste end to end.
                 waitForEngine { self.dictationSelfTest(wav: value) }

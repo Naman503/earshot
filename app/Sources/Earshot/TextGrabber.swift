@@ -161,7 +161,10 @@ final class TextGrabber {
         guard !text.isEmpty else { return nil }
         let rect = [.paragraph, .sentence, .section].contains(unit) ? paramRect(web, "AXBoundsForTextMarkerRange", range) : nil
         var grab = Grab(text: text, frame: rect, source: "web text markers")
-        if unit == .paragraph, CFGetTypeID(range) == AXTextMarkerRangeGetTypeID(),
+        if unit == .paragraph, let n = blockNeighbours(of: el) {
+            grab.before = n.before
+            grab.after = n.after
+        } else if unit == .paragraph, CFGetTypeID(range) == AXTextMarkerRangeGetTypeID(),
            let docStart = attr(web, "AXStartTextMarker"), let docEnd = attr(web, "AXEndTextMarker") {
             let r = range as! AXTextMarkerRange
             grab.before = paramString(web, "AXStringForTextMarkerRange",
@@ -189,6 +192,62 @@ final class TextGrabber {
             cur = parent
         }
         return best
+    }
+
+    /// The blocks before and after the one holding `el`, one per line, kept
+    /// inside the post or message it belongs to (an `article`, else the page's
+    /// main area), so "paragraphs above / below" never runs into the rest of
+    /// the chat, the sidebar or the message box.
+    func blockNeighbours(of el: AXUIElement) -> (before: String, after: String)? {
+        var boundary: AXUIElement?
+        var cur = el
+        for _ in 0..<40 {
+            guard let parent = attrElement(cur, kAXParentAttribute) else { break }
+            let sub = string(parent, kAXSubroleAttribute)
+            if sub == "AXDocumentArticle" || sub == "AXLandmarkMain" || role(parent) == "AXWebArea" { boundary = parent; break }
+            cur = parent
+        }
+        guard let boundary else { return nil }
+        let inline: Set<String> = ["AXStaticText", "AXLink", "AXImage", "AXListMarker"]
+        let skip: Set<String> = ["AXButton", "AXTextField", "AXTextArea", "AXComboBox", "AXCheckBox", "AXRadioButton",
+                                 "AXPopUpButton", "AXMenuButton", "AXToolbar", "AXMenu", "AXImage"]
+        var blocks: [String] = []
+        var current: Int?
+        var visited = 0
+        func text(_ e: AXUIElement, holds: inout Bool) -> String {
+            visited += 1
+            if CFEqual(e, el) { holds = true }
+            if role(e) == "AXStaticText" { return string(e, kAXValueAttribute) ?? "" }
+            if role(e) == "AXListMarker" || skip.contains(role(e) ?? "") { return "" }
+            return children(e).map { text($0, holds: &holds) }.joined()
+        }
+        func walk(_ e: AXUIElement) {
+            guard visited < 6000 else { return }
+            visited += 1
+            let r = role(e) ?? ""
+            if skip.contains(r) { return }
+            let kids = children(e)
+            // A block that has its own text runs is one paragraph, whatever
+            // inline groups (bold, code, links) sit between those runs.
+            let ownText = kids.contains { role($0) == "AXStaticText" && !(string($0, kAXValueAttribute) ?? "").trimmingCharacters(in: .whitespaces).isEmpty }
+            let leaf = r == "AXHeading" || r == "AXRow" || r == "AXStaticText" || ownText
+                || (!kids.isEmpty && kids.allSatisfy { inline.contains(role($0) ?? "") })
+            if leaf {
+                var holds = false
+                let t = r == "AXRow"
+                    ? kids.map { var h = false; let s = text($0, holds: &h); if h { holds = true }; return s }
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }.joined(separator: ", ")
+                    : text(e, holds: &holds)
+                let clean = t.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+                if holds, current == nil { current = blocks.count; blocks.append(clean); return }
+                if !clean.isEmpty { blocks.append(clean) }
+                return
+            }
+            kids.forEach(walk)
+        }
+        walk(boundary)
+        guard visited < 6000, let i = current else { return nil }
+        return (blocks[..<i].joined(separator: "\n"), blocks[(i + 1)...].joined(separator: "\n"))
     }
 
     /// The heading-to-heading run of blocks around `el`: find the nearest
@@ -468,6 +527,47 @@ final class TextGrabber {
             queue.append(contentsOf: children(el))
         }
         return nil
+    }
+
+    /// The static text containing `needle` in the named app's front window (debug).
+    func findText(inApp name: String, needle: String) -> AXUIElement? {
+        guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.localizedName == name && $0.activationPolicy == .regular }) else {
+            Log.write("findText: no app \(name)"); return nil
+        }
+        enableWebAccessibility(pid: app.processIdentifier)
+        usleep(500_000)
+        let root = AXUIElementCreateApplication(app.processIdentifier)
+        let wins = (attr(root, kAXWindowsAttribute) as? [AXUIElement]) ?? []
+        var found: AXUIElement?
+        var visited = 0
+        func walk(_ el: AXUIElement) {
+            guard found == nil, visited < 40000 else { return }
+            visited += 1
+            if role(el) == "AXStaticText", let v = string(el, kAXValueAttribute) {
+                if v.contains(needle) { found = el }
+                return
+            }
+            for c in children(el) { walk(c) }
+        }
+        wins.forEach(walk)
+        Log.write("findText: \(wins.count) windows, visited \(visited)")
+        return found
+    }
+
+    /// Ancestor chain of `el` with roles, DOM classes and child counts (debug).
+    func describeAncestors(_ el: AXUIElement) -> String {
+        var out = ""
+        var cur: AXUIElement? = el
+        for depth in 0..<16 {
+            guard let c = cur else { break }
+            let kids = children(c)
+            let classes = (attr(c, "AXDOMClassList") as? [String])?.prefix(4).joined(separator: ".") ?? ""
+            let kidRoles = kids.prefix(8).map { role($0) ?? "?" }.joined(separator: ",")
+            out += "\(depth) \(role(c) ?? "?")/\(string(c, kAXSubroleAttribute) ?? "")/\(string(c, "AXRoleDescription") ?? "") .\(classes) kids=\(kids.count) [\(kidRoles)]\n"
+            if role(c) == "AXWebArea" { break }
+            cur = attrElement(c, kAXParentAttribute)
+        }
+        return out
     }
 
     /// Center of a long static text in the named app's front window (for --probe-app).

@@ -17,7 +17,7 @@ final class Dictation: ObservableObject {
     private let settings: Settings
     private let kokoro: KokoroEngine
     private let reader: Reader
-    private var engine: AVAudioEngine?
+    private var mic: MicCapture?
     private let collector = Collector()
     private var pressedAt = Date.distantPast
     private var maxTimer: Timer?
@@ -113,8 +113,11 @@ final class Dictation: ObservableObject {
         stopRecording()
         if settings.dictationSounds { NSSound(named: "Pop")?.play() }
         let samples = collector.take()
+        let peak = samples.reduce(0) { max($0, abs($1)) }
+        Log.write("dictation: recorded \(String(format: "%.1f", Double(samples.count) / 16_000)) s, peak \(String(format: "%.3f", peak))")
         guard samples.count > 16_000 / 4 else {
             reader.clearNotice()
+            reader.flash("No audio from the microphone")
             setState(.idle)
             return
         }
@@ -133,35 +136,35 @@ final class Dictation: ObservableObject {
         }
     }
 
+    /// Records through AVCaptureSession, which asks Core Audio for 16 kHz mono
+    /// float and leaves the system's default input alone. (AVAudioEngine with
+    /// a switched input device delivered only fragments.)
     private func startRecording() throws {
-        let engine = AVAudioEngine()
-        if settings.dictationBuiltInMic, let mic = Self.builtInMicrophone(), let unit = engine.inputNode.audioUnit {
-            var id = mic
-            AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
-                                 &id, UInt32(MemoryLayout<AudioDeviceID>.size))
+        let devices = AVCaptureDevice.DiscoverySession(deviceTypes: [.microphone], mediaType: .audio, position: .unspecified).devices
+        let builtIn = devices.first { $0.transportType == Int32(bitPattern: kAudioDeviceTransportTypeBuiltIn) }
+        guard let device = (settings.dictationBuiltInMic ? builtIn : nil) ?? AVCaptureDevice.default(for: .audio) else {
+            throw NSError(domain: "Earshot", code: 1, userInfo: [NSLocalizedDescriptionKey: "No microphone"])
         }
-        let input = engine.inputNode
-        let inFormat = input.outputFormat(forBus: 0)
-        guard let outFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false),
-              let converter = AVAudioConverter(from: inFormat, to: outFormat) else {
-            throw NSError(domain: "Earshot", code: 1)
-        }
-        let collector = self.collector
-        input.installTap(onBus: 0, bufferSize: 2048, format: inFormat) { buffer, _ in
-            let capacity = AVAudioFrameCount(Double(buffer.frameLength) * 16_000 / inFormat.sampleRate) + 32
-            guard let out = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: capacity) else { return }
-            var fed = false
-            converter.convert(to: out, error: nil) { _, status in
-                if fed { status.pointee = .noDataNow; return nil }
-                fed = true
-                status.pointee = .haveData
-                return buffer
+        let mic = MicCapture(collector: collector)
+        try mic.start(device: device)
+        self.mic = mic
+        Log.write("dictation: recording from \(device.localizedName)")
+    }
+
+    /// Debug: records `seconds` from the mic and logs what came in (types nothing).
+    func micTest(seconds: Double) {
+        collector.reset()
+        do { try startRecording() } catch { Log.write("mic-test: start failed \(error)"); return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
+            self.stopRecording()
+            let s = self.collector.take()
+            let peak = s.reduce(0) { max($0, abs($1)) }
+            Log.write("mic-test: \(s.count) samples at 16 kHz, peak \(peak)")
+            Task {
+                let t = await self.kokoro.transcribe(s, model: "parakeet", language: "en")
+                Log.write("mic-test: heard \"\(t ?? "nil")\"")
             }
-            if let ch = out.floatChannelData { collector.append(UnsafeBufferPointer(start: ch[0], count: Int(out.frameLength))) }
         }
-        engine.prepare()
-        try engine.start()
-        self.engine = engine
     }
 
     private func updateLive() {
@@ -182,9 +185,8 @@ final class Dictation: ObservableObject {
         liveTimer = nil
         maxTimer?.invalidate()
         maxTimer = nil
-        engine?.inputNode.removeTap(onBus: 0)
-        engine?.stop()
-        engine = nil
+        mic?.stop()
+        mic = nil
     }
 
     private func setState(_ s: State) {
@@ -310,5 +312,54 @@ final class Dictation: ObservableObject {
             let inputs = CoreAudioQuery.array(id, kAudioDevicePropertyStreams, scope: kAudioObjectPropertyScopeInput, of: AudioStreamID.self)
             return transport == kAudioDeviceTransportTypeBuiltIn && !inputs.isEmpty
         }
+    }
+}
+
+/// Microphone capture delivering 16 kHz mono float samples to a collector.
+final class MicCapture: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate, @unchecked Sendable {
+    private let session = AVCaptureSession()
+    private let queue = DispatchQueue(label: "earshot.mic")
+    private let collector: Dictation.Collector
+
+    init(collector: Dictation.Collector) {
+        self.collector = collector
+    }
+
+    func start(device: AVCaptureDevice) throws {
+        let input = try AVCaptureDeviceInput(device: device)
+        let output = AVCaptureAudioDataOutput()
+        output.audioSettings = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: 16_000,
+            AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 32,
+            AVLinearPCMIsFloatKey: true,
+            AVLinearPCMIsNonInterleaved: false,
+            AVLinearPCMIsBigEndianKey: false,
+        ]
+        output.setSampleBufferDelegate(self, queue: queue)
+        session.beginConfiguration()
+        guard session.canAddInput(input), session.canAddOutput(output) else {
+            session.commitConfiguration()
+            throw NSError(domain: "Earshot", code: 2, userInfo: [NSLocalizedDescriptionKey: "Can't use \(device.localizedName)"])
+        }
+        session.addInput(input)
+        session.addOutput(output)
+        session.commitConfiguration()
+        session.startRunning()
+    }
+
+    func stop() {
+        session.stopRunning()
+    }
+
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        guard let block = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
+        let bytes = CMBlockBufferGetDataLength(block)
+        var floats = [Float](repeating: 0, count: bytes / MemoryLayout<Float>.size)
+        floats.withUnsafeMutableBytes { raw in
+            _ = CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: bytes, destination: raw.baseAddress!)
+        }
+        floats.withUnsafeBufferPointer { collector.append($0) }
     }
 }

@@ -133,6 +133,7 @@ private struct HowToTab: View {
                 row(.previousParagraph, nil)
                 row(.faster, nil)
                 row(.slower, nil)
+                row(.boost, "Jumps to your boost speed and back, smoothly. Hold it for a short burst.")
             }
             Section("Dictation") {
                 row(.dictate, "Hold the keys and talk, then let go. Or tap once to start and once to stop. Words are typed wherever your cursor is. Esc cancels.")
@@ -190,6 +191,14 @@ private struct VoiceTab: View {
                         Text(String(format: "%.2f×", settings.speed)).monospacedDigit().frame(width: 52)
                     }
                 }
+                LabeledContent("Boost speed") {
+                    HStack {
+                        Slider(value: $settings.boostSpeed, in: 1.0...4.0, step: 0.05)
+                        Text(String(format: "%.2f×", settings.boostSpeed)).monospacedDigit().frame(width: 52)
+                    }
+                }
+                Text("The boost shortcut (\(settings.shortcuts[.boost].map(HotKeys.describe) ?? "not set")) glides to this speed and back without restarting the sentence. Tap to switch, hold for a burst.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Text("Click a voice to hear it at this speed.").font(.caption).foregroundStyle(.secondary)
                 ForEach(VoiceCatalog.grouped(available: kokoro.voices), id: \.title) { group in
                     Section {

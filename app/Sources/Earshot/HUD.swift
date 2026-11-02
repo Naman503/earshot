@@ -92,7 +92,7 @@ private struct HUDView: View {
                     .lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if reader.notice == nil, reader.total > 0 {
-                    Text("\(reader.position) of \(reader.total) · \(String(format: "%.2g", settings.speed))×")
+                    Text("\(reader.position) of \(reader.total) · \(String(format: "%.2g", reader.speed))×\(reader.boosted ? " ⚡" : "")")
                         .font(.system(size: 10.5)).foregroundStyle(.secondary)
                 }
             }

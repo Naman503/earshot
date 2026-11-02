@@ -94,7 +94,7 @@ final class AudioOutput: ObservableObject {
 
     let engine = AVAudioEngine()
     let player = AVAudioPlayerNode()
-    private let stretch = AVAudioUnitTimePitch()
+    let stretch = AVAudioUnitTimePitch()
     private let gain = AVAudioUnitEQ(numberOfBands: 0)
     private let limiter = AVAudioUnitEffect(audioComponentDescription: AudioComponentDescription(
         componentType: kAudioUnitType_Effect, componentSubType: kAudioUnitSubType_PeakLimiter,
@@ -203,7 +203,7 @@ final class AudioOutput: ObservableObject {
         return Array(s[start..<end])
     }
 
-    static func resample(_ s: [Float], from: Double, to: Double) -> [Float] {
+    nonisolated static func resample(_ s: [Float], from: Double, to: Double) -> [Float] {
         guard let inF = AVAudioFormat(standardFormatWithSampleRate: from, channels: 1),
               let outF = AVAudioFormat(standardFormatWithSampleRate: to, channels: 1),
               let conv = AVAudioConverter(from: inF, to: outF),
