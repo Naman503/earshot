@@ -33,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         notifications.onBanner = { [weak self] in self?.announcer.handle($0) }
         pageWatcher = PageWatcher(settings: settings, reader: reader, grabber: grabber)
         macDictation = MacDictation(reader: reader)
+        macDictation.watchKeys()
         HotKeys.onRelease = { [weak self] action in
             if action == .dictate { self?.macDictation.released() }
             if action == .boost { self?.boostReleased() }
