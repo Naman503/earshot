@@ -19,6 +19,8 @@ final class MacDictation {
     private var checkID = 0
     private var tap: CFMachPort?
     private var lastControl = Date.distantPast
+    /// Last time dictation was seen with the microphone open.
+    private var lastHeard = Date.distantPast
 
     init(reader: Reader) {
         self.reader = reader
@@ -119,8 +121,18 @@ final class MacDictation {
     /// A key that may have started dictation. `sure`: it's a dictation key
     /// for certain, so if nothing comes on, the press was lost and is redone.
     private func dictationKey(_ which: String, sure: Bool) {
-        // Already dictating: this press turns it off.
-        guard Self.menuItem(starting: false) == nil else { check?.invalidate(); checkID += 1; return }
+        // Already dictating: this press turns it off. macOS often switches it
+        // off before we look, so the microphone still being open (it closes a
+        // moment later) or having heard you recently counts as "was on".
+        let wasOn = Self.menuItem(starting: false) != nil || Self.dictationHearing()
+            || Date().timeIntervalSince(lastHeard) < 1.5
+        guard !wasOn else {
+            check?.invalidate()
+            checkID += 1
+            lastHeard = .distantPast
+            if sure { Log.write("mac-dictation: \(which) pressed — stopped") }
+            return
+        }
         if sure { Log.write("mac-dictation: \(which) pressed in \(Self.frontName)") }
         if sure { getOutOfTheWay() }
         watch(since: Date(), step: 0, sure: sure)
@@ -140,6 +152,8 @@ final class MacDictation {
                 let elapsed = Date().timeIntervalSince(started)
                 if Self.dictationHearing() {
                     t.invalidate()
+                    self.lastHeard = Date()
+                    self.followUntilOff()
                     if !sure { self.getOutOfTheWay() }
                     Log.write("mac-dictation: listening after \(Int(elapsed * 1000)) ms\(step > 0 ? " (fixed)" : "")")
                 } else if Self.menuItem(starting: false) != nil {
@@ -162,6 +176,18 @@ final class MacDictation {
                         Log.write("mac-dictation: didn't turn on")
                     }
                 }
+            }
+        }
+    }
+
+    /// While dictation listens, notes every second that it's on, so a stop
+    /// press is never mistaken for a lost start. Ends when it switches off.
+    private func followUntilOff() {
+        let id = checkID
+        check = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] t in
+            MainActor.assumeIsolated {
+                guard let self, id == self.checkID, Self.dictationHearing() else { t.invalidate(); return }
+                self.lastHeard = Date()
             }
         }
     }

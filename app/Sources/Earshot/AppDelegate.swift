@@ -533,6 +533,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         }
                     }
                 }
+            case "--mickey-test":
+                // Presses the 🎤 key twice in Earshot's own window; dictation must end up off.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    let window = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 500, height: 80), styleMask: [.titled], backing: .buffered, defer: false)
+                    window.title = "Earshot dictation check"
+                    let field = NSTextField(frame: NSRect(x: 10, y: 20, width: 480, height: 40))
+                    window.contentView?.addSubview(field)
+                    NSApp.activate(ignoringOtherApps: true)
+                    window.makeKeyAndOrderFront(nil)
+                    window.makeFirstResponder(field)
+                    func mic() {
+                        for down in [true, false] { CGEvent(keyboardEventSource: nil, virtualKey: 176, keyDown: down)?.post(tap: .cghidEventTap) }
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { Log.write("mickey-test: press 1"); mic() }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 4) { Log.write("mickey-test: press 2"); mic() }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
+                        Log.write("mickey-test: after 4 s — dictation on: \(MacDictation.menuItem(starting: false) != nil), mic open: \(MacDictation.dictationHearing())")
+                        window.close()
+                    }
+                }
             case "--settings":
                 openSettings(tab: SettingsTab(rawValue: value) ?? .howTo)
             case "--render-settings":
