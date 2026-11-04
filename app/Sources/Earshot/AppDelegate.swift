@@ -534,6 +534,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     Log.write("para-test chain:\n\(self.grabber.describeAncestors(el))")
                     let n = self.grabber.blockNeighbours(of: el)
                     Log.write("para-test before (last 3):\n\(n?.before.components(separatedBy: "\n").suffix(3).joined(separator: "\n") ?? "nil")")
+                    Log.write("para-test container children:\n\(self.grabber.describeChildren(of: el, up: 2))")
                     Log.write("para-test current: \(n?.current ?? "nil")")
                     Log.write("para-test after:\n\(n?.after ?? "nil")")
                     for (b, a) in [(1, 1), (0, -1), (2, 0)] {

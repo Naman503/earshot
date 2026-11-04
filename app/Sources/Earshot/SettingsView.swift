@@ -660,6 +660,7 @@ private struct ReadingTab: View {
                 Toggle("Web addresses (URLs)", isOn: $settings.skipURLs)
                 Toggle("Citation marks like [12]", isOn: $settings.skipCitations)
                 Toggle("Emoji", isOn: $settings.skipEmoji)
+                Toggle("Say IDs, hashes, IP addresses, keys and long numbers briefly", isOn: $settings.shortenIDs)
             }
             Section("Code, commands and file paths") {
                 Picker("When reading them", selection: $settings.technicalText) {

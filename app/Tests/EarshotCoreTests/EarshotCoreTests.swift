@@ -277,3 +277,14 @@ final class SwipeIsNotTapTests: XCTestCase {
         XCTAssertEqual(out, [TrackpadTap(fingers: 4, taps: 1)])
     }
 }
+
+final class ShortenIDTests: XCTestCase {
+    func testIDsAreSaidBriefly() {
+        XCTAssertEqual(TextPrep.shortenIDs("merged: Naman503/platform#106 · CI"), "merged: number 106 · CI")
+        XCTAssertEqual(TextPrep.shortenIDs("squash commit 3447372. CI now"), "squash commit. CI now")
+        XCTAssertEqual(TextPrep.shortenIDs("its own port (127.0.0.1:32768), so"), "its own port (a local address), so")
+        XCTAssertEqual(TextPrep.shortenIDs("gh secret set CI_BILLING_TOKEN -R x"), "gh secret set CI billing token -R x")
+        XCTAssertEqual(TextPrep.shortenIDs("token ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3 here"), "token a key here")
+        XCTAssertEqual(TextPrep.shortenIDs("default 90% of 2,000 and 5432"), "default 90% of 2,000 and 5432")
+    }
+}

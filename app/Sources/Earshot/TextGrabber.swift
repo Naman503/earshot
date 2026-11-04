@@ -224,6 +224,24 @@ final class TextGrabber {
         return grab
     }
 
+    /// True when these children are a container's, not a paragraph's: they
+    /// include lists, tables or headings, or two or more paragraph-sized groups.
+    /// (A reply's container can also hold a loose line like "Created 4 files";
+    /// that alone used to make the whole reply count as one paragraph.)
+    private func holdsBlocks(_ kids: [AXUIElement]) -> Bool {
+        let blockRoles: Set<String> = ["AXList", "AXTable", "AXGrid", "AXOutline", "AXHeading", "AXRow"]
+        var paragraphs = 0
+        for k in kids {
+            let r = role(k) ?? ""
+            if blockRoles.contains(r) { return true }
+            guard r == "AXGroup" else { continue }
+            let own = children(k).filter { role($0) == "AXStaticText" }.compactMap { string($0, kAXValueAttribute) }.joined()
+            if own.count > 60 { paragraphs += 1 }
+            if paragraphs >= 2 { return true }
+        }
+        return false
+    }
+
     /// The text range of the paragraph holding `el`: climbs out of links into
     /// the enclosing block, but only while that block holds nothing except
     /// inline text, so a list row or a card never counts as one paragraph.
@@ -289,8 +307,16 @@ final class TextGrabber {
             visited += 1
             if CFEqual(e, el) { holds = true }
             if role(e) == "AXStaticText" { return string(e, kAXValueAttribute) ?? "" }
-            if role(e) == "AXListMarker" || skip.contains(role(e) ?? "") { return "" }
-            return children(e).map { text($0, holds: &holds) }.joined()
+            let r = role(e)
+            if r == "AXListMarker" { return "" }
+            // A button inside a sentence (Claude shows file names that way) is
+            // part of the sentence: read its label. Other controls stay silent.
+            if r == "AXButton" {
+                let inner = children(e).map { text($0, holds: &holds) }.joined()
+                return inner.isEmpty ? (string(e, kAXTitleAttribute) ?? string(e, kAXDescriptionAttribute) ?? "") : inner
+            }
+            if skip.contains(r ?? "") { return "" }
+            return readingChildren(e, role: r).map { text($0, holds: &holds) }.joined()
         }
         func walk(_ e: AXUIElement) {
             guard visited < 12000 else { return }
@@ -310,6 +336,7 @@ final class TextGrabber {
             // A block that has its own text runs is one paragraph, whatever
             // inline groups (bold, code, links) sit between those runs.
             let ownText = kids.contains { role($0) == "AXStaticText" && !(string($0, kAXValueAttribute) ?? "").trimmingCharacters(in: .whitespaces).isEmpty }
+                && !holdsBlocks(kids)
             let leaf = r == "AXHeading" || r == "AXRow" || r == "AXStaticText" || ownText
                 || (!kids.isEmpty && kids.allSatisfy { inline.contains(role($0) ?? "") })
             if leaf {
@@ -326,7 +353,8 @@ final class TextGrabber {
             kids.forEach(walk)
         }
         walk(boundary)
-        guard visited < 12000 else { return nil }
+        guard visited < 12000 else { Log.write("blocks: gave up after \(visited) elements"); return nil }
+        if current == nil, startAt == nil { Log.write("blocks: the tapped element wasn't found among \(blocks.count) blocks") }
         if let i = current { return (blocks[..<i].joined(separator: "\n"), blocks[i], blocks[(i + 1)...].joined(separator: "\n")) }
         guard let i = startAt else { return nil }
         return (blocks[..<i].joined(separator: "\n"), nil, blocks[i...].joined(separator: "\n"))
@@ -698,6 +726,16 @@ final class TextGrabber {
         return out
     }
 
+    /// Children of the ancestor `up` levels above `el`: role, subrole and text (debug).
+    func describeChildren(of el: AXUIElement, up: Int) -> String {
+        var cur = el
+        for _ in 0..<up { if let p = attrElement(cur, kAXParentAttribute) { cur = p } }
+        return children(cur).enumerated().map { i, c in
+            let v = (string(c, kAXValueAttribute) ?? string(c, kAXDescriptionAttribute) ?? "").prefix(50)
+            return "\(i) \(role(c) ?? "?")/\(string(c, kAXSubroleAttribute) ?? "") kids=\(children(c).count) “\(v)”"
+        }.joined(separator: "\n")
+    }
+
     /// Ancestor chain of `el` with roles, DOM classes and child counts (debug).
     func describeAncestors(_ el: AXUIElement) -> String {
         var out = ""
@@ -969,7 +1007,11 @@ final class TextRunLocator: WordLocator, @unchecked Sendable {
         }
         let words = phrase.split(whereSeparator: \.isWhitespace).map(String.init)
         let following = next.split(whereSeparator: \.isWhitespace).map(String.init).prefix(3)
-        guard let first = words.first, let r = place(first, then: Array(words.dropFirst()) + following) else { return nil }
+        guard let first = words.first, let r = place(first, then: Array(words.dropFirst()) + following) else {
+            misses += 1
+            return nil
+        }
+        misses = 0
         var range = r
         for w in words.dropFirst() {
             if let n = find(w, from: NSMaxRange(range), within: 24) { range = NSUnionRange(range, n) }
@@ -988,6 +1030,8 @@ final class TextRunLocator: WordLocator, @unchecked Sendable {
         return locate(phrase, next: next)
     }
     private var reloading = false
+    /// Words in a row that couldn't be placed.
+    private var misses = 0
 
     func remeasure() -> CGRect? { lastRange.flatMap { box(for: $0) } }
 
@@ -1000,12 +1044,16 @@ final class TextRunLocator: WordLocator, @unchecked Sendable {
         guard !core.isEmpty else { return nil }
         let from = min(cursor, text.length)
         let near = NSRange(location: from, length: min(400, text.length - from))
-        let far = NSRange(location: from, length: min(4000, text.length - from))
+        let far = NSRange(location: from, length: min(1500, text.length - from))
         let ahead = NSRange(location: from, length: text.length - from)
         let behind = NSRange(location: 0, length: from)
         // (where, search backwards, the next words must follow directly)
+        // Only after several words in a row weren't found (text the voice said
+        // differently, a skipped code line) look further ahead — never on a
+        // single miss, which made the marker jump to a repeated phrase paragraphs on.
+        let lost = misses >= 3
         let passes: [(NSRange, Bool, Bool)] = found
-            ? [(near, false, true), (near, false, false), (far, false, true)]
+            ? [(near, false, true), (near, false, false)] + (lost ? [(far, false, true)] : [])
             : [(ahead, false, true), (behind, true, true), (near, false, false)]
         for (window, backwards, strict) in passes {
             var search = window

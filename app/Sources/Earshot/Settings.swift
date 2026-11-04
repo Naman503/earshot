@@ -34,6 +34,8 @@ final class Settings: ObservableObject {
     @Published var highlightWords: Bool { didSet { save("highlightWords", highlightWords) } }
     /// Also light up the word in the now-reading bar (off: the page is enough).
     @Published var highlightWordsInBar: Bool { didSet { save("highlightWordsInBar", highlightWordsInBar) } }
+    /// Say IDs, hashes, addresses, keys and long numbers briefly.
+    @Published var shortenIDs: Bool { didSet { save("shortenIDs", shortenIDs) } }
     /// Stop the voice engine (freeing ~0.8 GB) after this many idle minutes.
     @Published var sleepVoiceWhenIdle: Bool { didSet { save("sleepVoiceWhenIdle", sleepVoiceWhenIdle) } }
     @Published var sleepVoiceAfterMinutes: Int { didSet { save("sleepVoiceAfterMinutes", sleepVoiceAfterMinutes) } }
@@ -144,6 +146,7 @@ final class Settings: ObservableObject {
         highlightSource = d.object(forKey: "highlightSource") as? Bool ?? true
         highlightWords = d.object(forKey: "highlightWords") as? Bool ?? true
         highlightWordsInBar = d.object(forKey: "highlightWordsInBar") as? Bool ?? false
+        shortenIDs = d.object(forKey: "shortenIDs") as? Bool ?? true
         sleepVoiceWhenIdle = d.object(forKey: "sleepVoiceWhenIdle") as? Bool ?? false
         sleepVoiceAfterMinutes = d.object(forKey: "sleepVoiceAfterMinutes") as? Int ?? 10
         highlightOffset = d.object(forKey: "highlightOffset") as? Double ?? 0
@@ -195,6 +198,7 @@ final class Settings: ObservableObject {
         o.skipURLs = skipURLs
         o.skipCitations = skipCitations
         o.skipEmoji = skipEmoji
+        o.shortenIDs = shortenIDs
         return o
     }
 

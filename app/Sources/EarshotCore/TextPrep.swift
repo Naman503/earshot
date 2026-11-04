@@ -7,6 +7,8 @@ public enum TextPrep {
         public var skipURLs = true
         public var skipCitations = true
         public var skipEmoji = true
+        /// Say IDs, hashes, addresses, keys and long numbers briefly.
+        public var shortenIDs = true
         public init() {}
     }
 
@@ -21,6 +23,7 @@ public enum TextPrep {
         // Hidden keyboard hints chat apps give screen readers.
         s = s.replacingOccurrences(of: #"(?m)^\s*Use the up and down arrow keys to move between messages\.?\s*$"#, with: "", options: .regularExpression)
         s = speakableSymbols(s)
+        if options.shortenIDs { s = shortenIDs(s) }
         if options.skipURLs {
             s = s.replacingOccurrences(of: #"https?://\S+|www\.\S+"#, with: " ", options: .regularExpression)
         }
@@ -56,6 +59,53 @@ public enum TextPrep {
             lines[i] = !probe.isEmpty && (next.hasPrefix(probe) || rest.hasPrefix(String(next.prefix(30))) && !next.isEmpty) ? "" : rest
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// Things that are there to be copied, not heard, said briefly: issue
+    /// refs, commit hashes, IP addresses, UUIDs, keys, long numbers, and
+    /// CONSTANT_NAMES as plain words.
+    public static func shortenIDs(_ text: String) -> String {
+        var s = text
+        func sub(_ pattern: String, _ template: String, _ opts: NSString.CompareOptions = .regularExpression) {
+            s = s.replacingOccurrences(of: pattern, with: template, options: opts)
+        }
+        // owner/repo#123 → number 123
+        sub(#"\b[\w.-]+/[\w.-]+#(\d+)\b"#, "number $1")
+        // commit 3447372 / sha 1a2b3c4d… → commit
+        sub(#"(?i)\b(commit|hash|sha|revision)\s+[0-9a-f]{7,40}\b"#, "$1")
+        // UUIDs
+        sub(#"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"#, "an ID")
+        // IP addresses (with an optional port)
+        sub(#"\b127\.0\.0\.1(:\d+)?\b|\blocalhost:\d+\b"#, "a local address")
+        sub(#"\b\d{1,3}(\.\d{1,3}){3}(:\d+)?\b"#, "an IP address")
+        // Keys and tokens: long runs mixing letters and digits, no spaces
+        s = replaceMatches(in: s, pattern: #"\b[A-Za-z0-9_\-]{24,}\b"#) { m in
+            m.rangeOfCharacter(from: .decimalDigits) != nil && m.rangeOfCharacter(from: .letters) != nil ? "a key" : m
+        }
+        // Standalone hex hashes (12+ chars with letters and digits)
+        s = replaceMatches(in: s, pattern: #"\b[0-9a-f]{12,40}\b"#) { m in
+            m.rangeOfCharacter(from: .decimalDigits) != nil && m.rangeOfCharacter(from: .letters) != nil ? "" : m
+        }
+        // Long numbers (8+ digits, not grouped with commas)
+        sub(#"(?<![\d,.])\d{8,}(?![\d,.])"#, "a long number")
+        // CONSTANT_NAMES → words: CI_BILLING_TOKEN → CI billing token
+        s = replaceMatches(in: s, pattern: #"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b"#) { m in
+            m.split(separator: "_").map { $0.count > 3 ? $0.lowercased() : String($0) }.joined(separator: " ")
+        }
+        return s.replacingOccurrences(of: #"  +"#, with: " ", options: .regularExpression)
+    }
+
+    private static func replaceMatches(in s: String, pattern: String, _ transform: (String) -> String) -> String {
+        guard let re = try? NSRegularExpression(pattern: pattern) else { return s }
+        let ns = s as NSString
+        var out = ""
+        var last = 0
+        for m in re.matches(in: s, range: NSRange(location: 0, length: ns.length)) {
+            out += ns.substring(with: NSRange(location: last, length: m.range.location - last))
+            out += transform(ns.substring(with: m.range))
+            last = NSMaxRange(m.range)
+        }
+        return out + ns.substring(from: last)
     }
 
     /// Key and arrow symbols the voice would say wrongly or not at all.
