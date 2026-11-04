@@ -726,7 +726,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 // "App|needle": reads nothing aloud. Prepares the reading a tap there would
                 // make and runs every word through the page finder, logging where it fails.
                 DispatchQueue.global().async {
-                    guard let el = self.grabber.findText(inApp: value.components(separatedBy: "|")[0], needle: value.components(separatedBy: "|")[1]),
+                    var hit: AXUIElement?
+                    for _ in 0..<4 where hit == nil {  // the page tree may take a moment to come back
+                        hit = self.grabber.findText(inApp: value.components(separatedBy: "|")[0], needle: value.components(separatedBy: "|")[1])
+                        if hit == nil { sleep(1) }
+                    }
+                    guard let el = hit,
                           var g = self.grabber.grabForTest(el), let loc = g.locator else { Log.write("follow-test: no grab"); return }
                     let s = DispatchQueue.main.sync { self.settings }
                     g.text = TextUnits.expand(current: g.text, before: g.before ?? "", after: g.after ?? "",

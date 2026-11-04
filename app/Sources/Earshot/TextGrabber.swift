@@ -112,12 +112,18 @@ final class TextGrabber {
         guard var el = element(at: point) else { return nil }
         var pid: pid_t = 0
         AXUIElementGetPid(el, &pid)
-        if enableWebAccessibility(pid: pid) {
-            // Chromium builds its tree on first request; wait until web content shows up.
-            for _ in 0..<8 {
+        let first = enableWebAccessibility(pid: pid)
+        let chromium = hasWebTree(pid: pid)
+        let inPage = role(el) == "AXWebArea" || ancestor(of: el, role: "AXWebArea") != nil
+        if first || (!inPage && chromium) {
+            // The page tree is being (re)built — Chromium apps switch it off on their
+            // own, and Claude rebuilds parts of it as replies update. Wait until the
+            // text under the pointer is connected to its page again.
+            if !first { Log.write("grab: text not connected to its page yet — waiting") }
+            for _ in 0..<10 {
                 usleep(100_000)
                 el = element(at: point) ?? el
-                if role(el) != "AXGroup" || ancestor(of: el, role: "AXWebArea") != nil { break }
+                if ancestor(of: el, role: "AXWebArea") != nil || role(el) == "AXWebArea" { break }
             }
         }
 
@@ -127,8 +133,17 @@ final class TextGrabber {
         }
         // Outside web pages, "visible" is exactly what OCR sees.
         if unit == .visible { return nil }
-        if let g = textAreaGrab(unit, el: el, at: point) { return g }
+        // In a Chromium app a loose piece of page text isn't a text box: reading it
+        // as one gave "a word or two". Only real text fields count there.
+        if !chromium || ["AXTextArea", "AXTextField", "AXComboBox"].contains(role(el) ?? ""),
+           let g = textAreaGrab(unit, el: el, at: point) { return g }
         if unit == .section { return nil }
+        // Still a loose fragment of a Chromium page: reading the screen gets the
+        // whole paragraph; this element alone would be a word or two.
+        if chromium, role(el) == "AXStaticText", unit != .window {
+            Log.write("grab: page text still not connected — reading the screen instead")
+            return nil
+        }
         if unit == .window, let win = attrElement(el, kAXWindowAttribute) {
             let text = collectText(win, limit: maxChars)
             return text.isEmpty ? nil : Grab(text: text, frame: frame(win), source: "window tree")
@@ -140,11 +155,29 @@ final class TextGrabber {
     /// Called ahead of time for running apps so the first tap is already fast.
     @discardableResult
     func enableWebAccessibility(pid: pid_t) -> Bool {
-        guard pid > 0, lock.withLock({ enabledPIDs.insert(pid).inserted }) else { return false }
+        guard pid > 0 else { return false }
+        let first = lock.withLock { enabledPIDs.insert(pid).inserted }
+        // Asked every time, not once: Chromium/Electron apps switch their page
+        // tree off again on their own (after a while, or when the page reloads),
+        // and then a tap found no text — a word or OCR — and no highlight.
         let app = AXUIElementCreateApplication(pid)
         let r = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
-        return r == .success
+        return first && r == .success
     }
+
+    /// True when the app answers the request that switches a page tree on
+    /// (Chromium, Electron).
+    private func hasWebTree(pid: pid_t) -> Bool {
+        if let known = lock.withLock({ chromiumPIDs[pid] }) { return known }
+        var chromium = false
+        if let url = NSRunningApplication(processIdentifier: pid)?.bundleURL?.appendingPathComponent("Contents/Frameworks"),
+           let names = try? FileManager.default.contentsOfDirectory(atPath: url.path) {
+            chromium = names.contains { $0 == "Electron Framework.framework" || ($0.hasSuffix(" Framework.framework") && !$0.hasPrefix("Sparkle")) }
+        }
+        lock.withLock { chromiumPIDs[pid] = chromium }
+        return chromium
+    }
+    private var chromiumPIDs: [pid_t: Bool] = [:]
 
     func webGrab(_ unit: GrabUnit, web: AXUIElement, el: AXUIElement, at point: CGPoint) -> Grab? {
         // WebKit answers AXTextMarkerForPosition; Chromium doesn't, so walk the
@@ -1002,8 +1035,11 @@ final class TextRunLocator: WordLocator, @unchecked Sendable {
 
     func locate(_ phrase: String, next: String) -> CGRect? {
         if !loaded {
-            loaded = true
+            // Retried on the next word if the page wasn't readable yet (being
+            // rebuilt): a single failed load used to leave the highlight off for
+            // the whole reading.
             guard let l = load() else { return nil }
+            loaded = true
             (runs, text, cursor) = (l.runs, l.text as NSString, l.cursor)
         }
         let words = phrase.split(whereSeparator: \.isWhitespace).map(String.init)
