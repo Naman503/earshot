@@ -93,7 +93,24 @@ final class PageWatcher: ObservableObject {
         }
         busy = true
         let grabber = self.grabber
+        let rules = settings.autoReadRules
+        let isPinned = pinned != nil
         queue.async {
+            // Only read the page when a rule covers this site or app: fetching a
+            // whole page every second makes long pages (and the app) stutter.
+            if !isPinned {
+                let id = grabber.pageIdentity(pid: target.0)
+                if id == nil || AutoReadRule.match(rules, host: id?.host, app: id?.app ?? "") == nil {
+                    DispatchQueue.main.async {
+                        MainActor.assumeIsolated {
+                            self.busy = false
+                            if let host = id?.host { self.lastHost = host }
+                            self.reset()
+                        }
+                    }
+                    return
+                }
+            }
             let snap = grabber.pageSnapshot(pid: target.0, window: target.1)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {

@@ -168,6 +168,8 @@ final class AudioOutput: ObservableObject {
 
     func apply(speedStretch: Double, volume: Double) {
         stretch.rate = Float(max(0.5, min(speedStretch, 4)))
+        // Most overlap = smoothest sound while it covers a speed change.
+        if stretch.overlap != 32 { stretch.overlap = 32 }
         // Up to 1 is plain volume; above it, boost up to +12 dB into the limiter.
         player.volume = Float(min(volume, 1))
         gain.globalGain = volume > 1 ? Float((volume - 1) * 12) : 0
@@ -201,10 +203,13 @@ final class AudioOutput: ObservableObject {
         if latencyDevice != currentDevice {
             latencyDevice = currentDevice
             deviceLatency = Self.deviceLatency(currentDevice)
-            Log.write("audio: output delay \(Int(max(deviceLatency, engine.outputNode.presentationLatency) * 1000)) ms")
+            Log.write("audio: output delay \(Int(max(deviceLatency, engine.outputNode.presentationLatency) * 1000)) ms, effects \(Int(effectsLatency * 1000)) ms (stretch \(Int(stretch.auAudioUnit.latency * 1000)), limiter \(Int(limiter.auAudioUnit.latency * 1000)))")
         }
-        return max(deviceLatency, engine.outputNode.presentationLatency)
+        return max(deviceLatency, engine.outputNode.presentationLatency) + effectsLatency
     }
+
+    /// Delay the time-stretch and limiter add (both look ahead in the audio).
+    var effectsLatency: Double { stretch.auAudioUnit.latency + gain.auAudioUnit.latency + limiter.auAudioUnit.latency }
     private var latencyDevice: AudioDeviceID = 0
     private var deviceLatency = 0.0
 

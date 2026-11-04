@@ -34,6 +34,8 @@ final class Settings: ObservableObject {
     @Published var highlightWords: Bool { didSet { save("highlightWords", highlightWords) } }
     /// Also light up the word in the now-reading bar (off: the page is enough).
     @Published var highlightWordsInBar: Bool { didSet { save("highlightWordsInBar", highlightWordsInBar) } }
+    /// Seconds to move the word highlight later (+) or earlier (−) than measured.
+    @Published var highlightOffset: Double { didSet { save("highlightOffset", highlightOffset) } }
     /// Code, commands, paths and tool rows: read fast, skip, or read normally.
     @Published var technicalText: TextPrep.TechnicalText { didSet { save("technicalText", technicalText.rawValue) } }
     /// Speed for technical text when read fast (never slower than normal).
@@ -139,6 +141,7 @@ final class Settings: ObservableObject {
         highlightSource = d.object(forKey: "highlightSource") as? Bool ?? true
         highlightWords = d.object(forKey: "highlightWords") as? Bool ?? true
         highlightWordsInBar = d.object(forKey: "highlightWordsInBar") as? Bool ?? false
+        highlightOffset = d.object(forKey: "highlightOffset") as? Double ?? 0
         technicalText = d.string(forKey: "technicalText").flatMap(TextPrep.TechnicalText.init) ?? .fast
         technicalSpeed = d.object(forKey: "technicalSpeed") as? Double ?? 4.0
         paragraphsBefore = d.object(forKey: "paragraphsBefore") as? Int ?? 0

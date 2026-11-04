@@ -30,7 +30,7 @@ final class HoldKeys {
             let this = Unmanaged<HoldKeys>.fromOpaque(refcon).takeUnretainedValue()
             let code = event.getIntegerValueField(.keyboardEventKeycode)
             let flags = event.flags
-            MainActor.assumeIsolated { this.saw(type: type, keyCode: code, flags: flags) }
+            DispatchQueue.main.async { MainActor.assumeIsolated { this.saw(type: type, keyCode: code, flags: flags) } }
             return Unmanaged.passUnretained(event)
         }, userInfo: me)
         guard let tap else { Log.write("hold keys: can't watch keys (no permission)"); return }

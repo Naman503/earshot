@@ -680,6 +680,14 @@ private struct ReadingTab: View {
                 Toggle("Outline the text that was picked up", isOn: $settings.highlightSource)
                 Toggle("Highlight each word on the page as it's spoken", isOn: $settings.highlightWords)
                 Toggle("Also highlight it in the now-reading bar", isOn: $settings.highlightWordsInBar)
+                LabeledContent("Highlight timing") {
+                    HStack {
+                        Text("Earlier").font(.caption).foregroundStyle(.secondary)
+                        Slider(value: $settings.highlightOffset, in: -0.3...0.6, step: 0.05)
+                        Text("Later").font(.caption).foregroundStyle(.secondary)
+                        Text(String(format: "%+.2f s", settings.highlightOffset)).monospacedDigit().frame(width: 56)
+                    }
+                }
                 Text("Short words are lit together with the next one. Works in browsers, Electron apps and Mac text views.")
                     .font(.caption).foregroundStyle(.secondary)
             }

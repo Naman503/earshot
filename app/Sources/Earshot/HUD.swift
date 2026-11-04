@@ -15,6 +15,8 @@ final class HUD {
     private var pending: (String, String, WordLocator)?
     private var missedSince: Date?
 
+    private var scrollMonitor: Any?
+
     init(reader: Reader, settings: Settings) {
         self.reader = reader
         self.settings = settings
@@ -28,6 +30,11 @@ final class HUD {
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         panel.contentView = NSHostingView(rootView: HUDView(reader: reader, settings: settings))
+        // The page moves under the marker while you scroll or drag a window:
+        // hide it; the next word puts it back in the right place.
+        scrollMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.scrollWheel, .leftMouseDragged]) { [weak self] _ in
+            MainActor.assumeIsolated { self?.marker.hide() }
+        }
     }
 
     /// Shows the bar while reading or while a notice is up.

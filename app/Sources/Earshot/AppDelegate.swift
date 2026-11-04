@@ -42,6 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if action == .boost { self?.boostReleased() }
         }
         Log.write("launch \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") ?? "") accessibility=\(AXIsProcessTrusted())")
+        watchForStalls()
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(systemSymbolName: "headphones", accessibilityDescription: "Earshot")
@@ -123,6 +124,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         pageWatcher.start()
         handleDebugArguments()
         if !AXIsProcessTrusted() { openSettings(tab: .general) }
+    }
+
+    private let stallQueue = DispatchQueue(label: "earshot.stalls", qos: .utility)
+    private var stallTimer: DispatchSourceTimer?
+
+    /// Logs whenever the app is slow to respond (main thread busy > 0.3 s), so
+    /// a freeze leaves a trace of what was happening around it.
+    private func watchForStalls() {
+        let timer = DispatchSource.makeTimerSource(queue: stallQueue)
+        timer.schedule(deadline: .now() + 2, repeating: 2, leeway: .milliseconds(200))
+        timer.setEventHandler {
+            let sent = Date()
+            DispatchQueue.main.async {
+                let lag = Date().timeIntervalSince(sent)
+                if lag > 0.3 { Log.write("stall: the app was busy for \(Int(lag * 1000)) ms") }
+            }
+        }
+        timer.resume()
+        stallTimer = timer
     }
 
     private var boostPressedAt = Date.distantPast
@@ -606,6 +626,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         }
                         Log.write("locate-own: \(words.count) words, \(wrong) out of order")
                         DispatchQueue.main.async { window.close() }
+                    }
+                }
+            case "--speed-test":
+                // Muted reading with speed changes; logs whether audio is re-made at each speed.
+                waitForEngine {
+                    let (volume, media) = (self.settings.volume, self.settings.mediaPolicy)
+                    self.settings.volume = 0
+                    self.settings.mediaPolicy = .keepPlaying
+                    let text = String(repeating: "This sentence is here so the reader has plenty of speech to work with during the test. ", count: 12)
+                    self.reader.read(text, source: "speed test", quiet: true)
+                    for (t, mode) in [(2.0, Reader.SpeedMode.slow), (6, .normal), (10, .boost), (14, .normal)] {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + t) { self.reader.setSpeedMode(mode, quiet: true) }
+                    }
+                    for k in 1...36 {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + Double(k) * 0.5) {
+                            Log.write("speed-test t=\(Double(k) * 0.5): \(self.reader.debugSpeedState)")
+                        }
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 18.5) {
+                        self.reader.stop()
+                        self.settings.volume = volume
+                        self.settings.mediaPolicy = media
                     }
                 }
             case "--settings":

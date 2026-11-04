@@ -532,6 +532,22 @@ final class TextGrabber {
 
     /// Text of a window: its main web area via text markers, else its
     /// accessibility tree. `window` nil means the app's focused window.
+    /// Which app and site is in front, without reading the page: cheap enough
+    /// to check every second (the page web area is found once per window).
+    func pageIdentity(pid: pid_t) -> (app: String, host: String?)? {
+        let root = AXUIElementCreateApplication(pid)
+        guard let win = attrElement(root, kAXFocusedWindowAttribute) else { return nil }
+        let windowID = Int(CFHash(win))
+        let app = NSRunningApplication(processIdentifier: pid)?.localizedName ?? "?"
+        if webAreaCache[windowID] == nil, !identityChecked.contains(windowID) {
+            identityChecked.insert(windowID)
+            webAreaCache[windowID] = largestWebArea(in: win)
+        }
+        let url = webAreaCache[windowID].flatMap { (attr($0, "AXURL") as? URL)?.absoluteString ?? attr($0, "AXURL") as? String }
+        return (app, url.flatMap { URL(string: $0)?.host })
+    }
+    private var identityChecked = Set<Int>()
+
     func pageSnapshot(pid: pid_t, window: AXUIElement? = nil) -> PageSnapshot? {
         let root = AXUIElementCreateApplication(pid)
         guard let win = window ?? attrElement(root, kAXFocusedWindowAttribute) else { return nil }
@@ -925,8 +941,17 @@ final class TextRunLocator: WordLocator, @unchecked Sendable {
         found = true
         cursor = NSMaxRange(range)
         lastRange = range
-        return box(for: range)
+        if let b = box(for: range) { return b }
+        // Found in the text but nothing measurable: the page rebuilt those
+        // elements (scrolled, re-rendered). Read it afresh and find the place again.
+        guard !reloading else { return nil }
+        reloading = true
+        defer { reloading = false }
+        loaded = false
+        found = false
+        return locate(phrase, next: next)
     }
+    private var reloading = false
 
     /// Where `word` is on the page: the first place after the cursor that the
     /// following spoken words also come after, so a common word ("the") never

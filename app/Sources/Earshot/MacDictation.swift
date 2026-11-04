@@ -19,8 +19,6 @@ final class MacDictation {
     private var checkID = 0
     private var tap: CFMachPort?
     private var lastControl = Date.distantPast
-    /// Last time dictation was seen with the microphone open.
-    private var lastHeard = Date.distantPast
 
     init(reader: Reader) {
         self.reader = reader
@@ -87,7 +85,8 @@ final class MacDictation {
                 return Unmanaged.passUnretained(event)
             }
             let flags = event.flags
-            MainActor.assumeIsolated { this.saw(type: type, keyCode: code, flags: flags) }
+            // Never work inside the key path: keystrokes must not wait on us.
+            DispatchQueue.main.async { MainActor.assumeIsolated { this.saw(type: type, keyCode: code, flags: flags) } }
             return Unmanaged.passUnretained(event)
         }, userInfo: me)
         guard let tap else { Log.write("mac-dictation: can't watch keys (no permission)"); return }
@@ -118,76 +117,49 @@ final class MacDictation {
         }
     }
 
-    /// A key that may have started dictation. `sure`: it's a dictation key
-    /// for certain, so if nothing comes on, the press was lost and is redone.
+    /// A key that may have started (or stopped) dictation. Only acts if the
+    /// Mac's dictation then actually comes on: a press is never redone, so a
+    /// stop press can't turn dictation back on.
     private func dictationKey(_ which: String, sure: Bool) {
-        // Already dictating: this press turns it off. macOS often switches it
-        // off before we look, so the microphone still being open (it closes a
-        // moment later) or having heard you recently counts as "was on".
-        let wasOn = Self.menuItem(starting: false) != nil || Self.dictationHearing()
-            || Date().timeIntervalSince(lastHeard) < 1.5
-        guard !wasOn else {
-            check?.invalidate()
-            checkID += 1
-            lastHeard = .distantPast
-            if sure { Log.write("mac-dictation: \(which) pressed — stopped") }
-            return
-        }
+        check?.invalidate()
+        checkID += 1
         if sure { Log.write("mac-dictation: \(which) pressed in \(Self.frontName)") }
-        if sure { getOutOfTheWay() }
-        watch(since: Date(), step: 0, sure: sure)
+        // Let macOS act on the press first, then see what it did.
+        let id = checkID
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            guard let self, id == self.checkID else { return }
+            self.watch(since: Date(), step: 0, sure: sure)
+        }
     }
 
-    /// Waits for the microphone to open; if it doesn't, step 0 turns dictation
-    /// off and on again, step 1 restarts the dictation helper first.
+    /// Waits for dictation to come on and the microphone to open. If it's on
+    /// but deaf, step 0 turns it off and on again, step 1 also restarts the
+    /// dictation helper. If it never comes on (a stop press), nothing happens.
     private func watch(since started: Date, step: Int, sure: Bool) {
         check?.invalidate()
         checkID += 1
         let id = checkID
         let limit = step == 0 ? 1.6 : 2.5
         var seenOn = false
-        check = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] t in
+        check = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] t in
             MainActor.assumeIsolated {
                 guard let self, id == self.checkID else { t.invalidate(); return }
                 let elapsed = Date().timeIntervalSince(started)
-                if Self.dictationHearing() {
+                let on = Self.menuItem(starting: false) != nil
+                if on, Self.dictationHearing() {
                     t.invalidate()
-                    self.lastHeard = Date()
-                    self.followUntilOff()
-                    if !sure { self.getOutOfTheWay() }
+                    self.getOutOfTheWay()
                     Log.write("mac-dictation: listening after \(Int(elapsed * 1000)) ms\(step > 0 ? " (fixed)" : "")")
-                } else if Self.menuItem(starting: false) != nil {
-                    if !seenOn, !sure { Log.write("mac-dictation: turned on by \(Self.frontName) key") }
+                } else if on {
                     seenOn = true
                     if elapsed > limit {
                         t.invalidate()
                         self.recover(step: step)
                     }
                 } else if seenOn || elapsed > limit {
-                    // You turned it off, or it never came on (its menu shows up ~0.5–1 s in).
-                    t.invalidate()
-                    guard !seenOn, sure else { return }
-                    if step == 0, let item = Self.menuItem(starting: true) {
-                        Log.write("mac-dictation: the press didn't register — starting it")
-                        self.reader.flash("Starting dictation…")
-                        AXUIElementPerformAction(item, kAXPressAction as CFString)
-                        self.watch(since: Date(), step: 1, sure: true)
-                    } else {
-                        Log.write("mac-dictation: didn't turn on")
-                    }
+                    t.invalidate()  // turned off, or this press wasn't a start
+                    if sure, !seenOn { Log.write("mac-dictation: off") }
                 }
-            }
-        }
-    }
-
-    /// While dictation listens, notes every second that it's on, so a stop
-    /// press is never mistaken for a lost start. Ends when it switches off.
-    private func followUntilOff() {
-        let id = checkID
-        check = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] t in
-            MainActor.assumeIsolated {
-                guard let self, id == self.checkID, Self.dictationHearing() else { t.invalidate(); return }
-                self.lastHeard = Date()
             }
         }
     }

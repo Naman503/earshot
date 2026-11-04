@@ -46,7 +46,6 @@ final class Reader: ObservableObject {
     /// Boost (`settings.boostSpeed`) or slow (`settings.slowSpeed`) instead of the normal speed.
     @Published private(set) var speedMode: SpeedMode = .normal
     var boosted: Bool { speedMode == .boost }
-    private var regenerate: DispatchWorkItem?
     private var rampTimer: Timer?
     /// The speed in use right now.
     var speed: Double {
@@ -282,9 +281,8 @@ final class Reader: ObservableObject {
         setSpeedMode(on ? .boost : .normal)
     }
 
-    /// Glides to the mode's speed on the player right away. The voice is only
-    /// regenerated at the new speed (for full clarity) once the mode has held
-    /// for a moment, so quick holds of a key cost the engine nothing.
+    /// Glides to the mode's speed on the player right away, and re-voices what
+    /// comes next at that speed (see `speedChanged`).
     func setSpeedMode(_ mode: SpeedMode, quiet: Bool = false) {
         guard mode != speedMode else { return }
         speedMode = mode
@@ -292,10 +290,7 @@ final class Reader: ObservableObject {
             flash(String(format: mode == .boost ? "Boost %.2g×" : mode == .slow ? "Slow %.2g×" : "Normal speed %.2g×", speed))
         }
         applyAudioSettings(ramp: true)
-        regenerate?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.speedChanged() }
-        regenerate = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
+        speedChanged()
     }
 
     /// Applies volume, and speed on the player at once (or gliding, with
@@ -324,9 +319,11 @@ final class Reader: ObservableObject {
         }
     }
 
-    /// Keeps what's already queued in the player (its speed is corrected on
-    /// the fly) and regenerates the sentences after it at the new speed, so
-    /// the voice never restarts mid-sentence.
+    /// Re-voices everything after the current spot at the new speed, right
+    /// away. Only the rest of the sentence being heard keeps its old audio
+    /// (sped up or slowed by the player); everything queued after it is
+    /// dropped and made again, so the voice never stays stretched for long —
+    /// stretching several queued sentences is what sounded robotic.
     func speedChanged() {
         guard usesKokoro, isActive, abs(speed - bakedSpeed) > 0.01 else {
             if rampTimer == nil { applyAudioSettings() }
@@ -335,12 +332,74 @@ final class Reader: ObservableObject {
         bakedSpeed = speed
         readID += 1
         kokoro.cancelPending()
-        let keep = Set(scheduled)
-        cache = cache.filter { keep.contains($0.key) }
-        requested = requested.intersection(keep)
         failed = []
+        guard let playing = scheduled.first else {
+            // Nothing playing yet: just make the rest at the new speed.
+            cache = [:]
+            requested = []
+            if rampTimer == nil { applyAudioSettings() }
+            fill()
+            return
+        }
+        // The rest of the sentence being heard; if that's under ~1.2 s, the next
+        // (already made) sentence too, so there's no silence while new audio is made.
+        let tail = remainder(of: playing)
+        let tailSeconds = tail.map { Double($0.buffer.frameLength) / $0.buffer.format.sampleRate / max(Double(audio.stretch.rate), 0.1) } ?? 0
+        // Only for small changes: a whole sentence stretched far sounds robotic,
+        // so for big ones a short pause is the better trade.
+        let ratio = speed / (bakedFor[playing + 1] ?? bakedSpeed)
+        let bridge = tailSeconds < 1.2 && (0.8...1.25).contains(ratio) && scheduled.contains(playing + 1) ? cache[playing + 1] : nil
+        guard tail != nil || bridge != nil else {
+            cache = [:]
+            requested = []
+            if playing + 1 < chunks.count { restartAt(playing + 1, on: nil) }
+            if rampTimer == nil { applyAudioSettings() }
+            return
+        }
+        playToken += 1
+        audio.player.stop()
+        chunkFrames = [:]
+        scheduledFrames = 0
+        scheduled = []
+        cache = [:]
+        requested = []
+        if let tail {
+            cache[playing] = tail.buffer
+            requested.insert(playing)
+            timings[playing] = timings[playing]?.map { SpokenWord(range: $0.range, start: $0.start - tail.skipped, end: $0.end - tail.skipped) }
+            index = playing
+        } else {
+            index = playing + 1
+        }
+        if let bridge {
+            cache[playing + 1] = bridge
+            requested.insert(playing + 1)
+        }
+        if state != .paused { audio.player.play() }
         if rampTimer == nil { applyAudioSettings() }
+        scheduleReady()
         fill()
+    }
+
+    /// Debug: playing chunk, player stretch ratio, and the speed it was made at.
+    var debugSpeedState: String {
+        let head = scheduled.first ?? index
+        return String(format: "chunk %d, mode %@, speed %.2f, made at %.2f, player ratio %.2f, queued %d, delay %d ms",
+                      head, "\(speedMode)", speed, bakedFor[head] ?? -1, audio.stretch.rate, scheduled.count, Int(audio.outputLatency * 1000))
+    }
+
+    /// What's left to play of chunk `i` from the player's current position.
+    private func remainder(of i: Int) -> (buffer: AVAudioPCMBuffer, skipped: Double)? {
+        guard let buffer = cache[i], let frames = chunkFrames[i], let node = audio.player.lastRenderTime,
+              let t = audio.player.playerTime(forNodeTime: node) else { return nil }
+        let at = max(0, min(t.sampleTime - frames.start, AVAudioFramePosition(buffer.frameLength)))
+        let left = AVAudioFrameCount(AVAudioFramePosition(buffer.frameLength) - at)
+        guard left > AVAudioFrameCount(buffer.format.sampleRate * 0.05),
+              let out = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: left),
+              let src = buffer.floatChannelData, let dst = out.floatChannelData else { return nil }
+        out.frameLength = left
+        for ch in 0..<Int(buffer.format.channelCount) { dst[ch].update(from: src[ch] + Int(at), count: Int(left)) }
+        return (out, Double(at) / buffer.format.sampleRate)
     }
 
     private func finishNaturally() {
@@ -489,7 +548,10 @@ final class Reader: ObservableObject {
         guard state == .speaking, let nodeTime = audio.player.lastRenderTime,
               let t = audio.player.playerTime(forNodeTime: nodeTime) else { return }
         let rate = t.sampleRate
-        let heard = t.sampleTime - AVAudioFramePosition(audio.outputLatency * Double(audio.stretch.rate) * rate)
+        // What you hear now left the player this long ago: the earbuds' delay plus
+        // the time-stretch and limiter look-ahead, and your own timing nudge.
+        let delay = audio.outputLatency * Double(audio.stretch.rate) + settings.highlightOffset
+        let heard = t.sampleTime - AVAudioFramePosition(delay * rate)
         guard let chunk = scheduled.first(where: { i in
             chunkFrames[i].map { heard >= $0.start && heard < $0.start + $0.length } ?? false
         }), let frames = chunkFrames[chunk], let words = timings[chunk] else { return }
