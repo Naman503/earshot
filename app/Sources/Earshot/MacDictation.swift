@@ -111,7 +111,7 @@ final class MacDictation {
             lastControl = now
         case .keyDown:
             lastControl = .distantPast
-            if keyCode == 176 { dictationKey("🎤 key", sure: true) }  // the dictation key on Apple keyboards
+            if keyCode == 176, Date().timeIntervalSince(ignoreOwnKey) > 0.3 { dictationKey("🎤 key", sure: true) }  // the dictation key on Apple keyboards
         default:
             // System-defined events: the 🎤 key on some keyboards, media keys.
             // Volume, brightness and play keys are known; anything else may be 🎤.
@@ -127,8 +127,10 @@ final class MacDictation {
     /// press is completed (stopped or started). Another press while checking
     /// simply flips what's expected, so it never fights you.
     private func dictationKey(_ which: String, sure: Bool) {
-        // Tracked state only: by now macOS may already have acted on the press.
-        let before = expected ?? isOn
+        // What it was before the press: tracked state, or the mic still being
+        // open — a stop leaves it open for a moment, a start can't have opened it
+        // yet (that takes ≥0.15 s), so this can't mistake a stop for a start.
+        let before = expected ?? (isOn || Self.dictationHearing())
         guard sure else {
             // Control twice / other keys: only notice if dictation came on.
             if !before { observe() }
@@ -160,6 +162,20 @@ final class MacDictation {
             }
         }
     }
+
+    /// Starts or stops dictation: the app's menu item if it has one, else
+    /// the 🎤 key itself.
+    private func press(starting: Bool) {
+        if let item = Self.menuItem(starting: starting) {
+            AXUIElementPerformAction(item, kAXPressAction as CFString)
+        } else {
+            let src = CGEventSource(stateID: .privateState)
+            for down in [true, false] { CGEvent(keyboardEventSource: src, virtualKey: 176, keyDown: down)?.post(tap: .cghidEventTap) }
+            ignoreOwnKey = Date()
+        }
+    }
+    /// When we last sent the 🎤 key ourselves (so we don't react to it).
+    private var ignoreOwnKey = Date.distantPast
 
     /// The press's expected result while it's being checked.
     private var expected: Bool?
@@ -197,14 +213,14 @@ final class MacDictation {
                             }
                         } else if elapsed > 1.3 {
                             t.invalidate()
-                            guard step == 0, !seenOn, let item = Self.menuItem(starting: true) else {
+                            guard step == 0, !seenOn else {
                                 self.expected = nil
                                 self.isOn = false
                                 Log.write("mac-dictation: didn't come on")
                                 return
                             }
                             Log.write("mac-dictation: the press was ignored — starting dictation")
-                            AXUIElementPerformAction(item, kAXPressAction as CFString)
+                            self.press(starting: true)
                             self.verify(true, since: Date(), step: 1)
                         }
                     } else {
@@ -216,10 +232,8 @@ final class MacDictation {
                         } else if elapsed > 1.0 {
                             t.invalidate()
                             self.expected = nil
-                            if let item = Self.menuItem(starting: false) {
-                                Log.write("mac-dictation: the press was ignored — stopping dictation")
-                                AXUIElementPerformAction(item, kAXPressAction as CFString)
-                            }
+                            Log.write("mac-dictation: the press was ignored — stopping dictation")
+                            self.press(starting: false)
                             self.isOn = false
                         }
                     }
@@ -251,11 +265,16 @@ final class MacDictation {
     private func follow() {
         isOn = true
         let id = checkID
+        var offCount = 0
         check = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] t in
             MainActor.assumeIsolated {
                 guard let self, id == self.checkID else { t.invalidate(); return }
                 self.probe { hearing, menuOn in
-                    guard id == self.checkID, !hearing, !menuOn else { return }
+                    guard id == self.checkID else { return }
+                    // Off only after 1.5 s of consistent "off": one glitchy
+                    // reading must not make the next stop press look like a start.
+                    offCount = hearing || menuOn ? 0 : offCount + 1
+                    guard offCount >= 3 else { return }
                     t.invalidate()
                     self.isOn = false
                 }

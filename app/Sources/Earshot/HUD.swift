@@ -36,6 +36,17 @@ final class HUD {
         scrollMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.scrollWheel, .leftMouseDragged]) { [weak self] _ in
             MainActor.assumeIsolated { self?.pageMoved() }
         }
+        // Switching apps or desktops: hide the marker unless the app being read
+        // is the one in front; coming back, the next word shows it again.
+        for name in [NSWorkspace.didActivateApplicationNotification, NSWorkspace.activeSpaceDidChangeNotification] {
+            NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.marker.hide()
+                    if self.sourceInFront { self.findNext() }
+                }
+            }
+        }
     }
 
     /// Shows the bar while reading or while a notice is up.
@@ -94,7 +105,7 @@ final class HUD {
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     self.busy = false
-                    if let box { self.marker.show(box) }
+                    if let box, self.sourceInFront { self.marker.show(box) }
                     if self.scrollEnd == nil { self.findNext() }
                 }
             }
@@ -130,8 +141,15 @@ final class HUD {
         marker.hide()
     }
 
+    /// Only over the app being read: not on top of whatever you switched to.
+    private var sourceInFront: Bool {
+        guard let pid = lastLocator?.pid, pid > 0 else { return true }
+        return NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
+    }
+
     private func place(_ rect: CGRect) {
         missedSince = nil
+        guard sourceInFront else { marker.hide(); return }
         marker.tint(for: reader.speedMode)
         marker.show(rect)
     }

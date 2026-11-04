@@ -24,6 +24,8 @@ protocol WordLocator: AnyObject, Sendable {
     func locate(_ phrase: String, next: String) -> CGRect?
     /// Where the last word found is now (after the page scrolled or moved).
     func remeasure() -> CGRect?
+    /// The app the words are in (the marker only shows while it's in front).
+    var pid: pid_t { get }
 }
 
 /// Letters and digits only, lowercased: "Earshot's," → "earshots".
@@ -922,8 +924,11 @@ final class TextRunLocator: WordLocator, @unchecked Sendable {
     /// Where the last word was found (debug).
     var lastRange: NSRange?
 
-    init(grabber: TextGrabber, load: @escaping () -> (runs: [Run], text: String, cursor: Int)?) {
+    let pid: pid_t
+
+    init(grabber: TextGrabber, pid: pid_t, load: @escaping () -> (runs: [Run], text: String, cursor: Int)?) {
         self.grabber = grabber
+        self.pid = pid
         self.load = load
     }
 
@@ -1052,7 +1057,9 @@ final class TextRunLocator: WordLocator, @unchecked Sendable {
 extension TextGrabber {
     /// A native text view: one run, starting at `start`.
     func textViewLocator(_ el: AXUIElement, text: String, start: Int) -> TextRunLocator {
-        TextRunLocator(grabber: self) {
+        var pid: pid_t = 0
+        AXUIElementGetPid(el, &pid)
+        return TextRunLocator(grabber: self, pid: pid) {
             ([TextRunLocator.Run(element: el, start: 0, length: (text as NSString).length)], text, start)
         }
     }
@@ -1060,7 +1067,9 @@ extension TextGrabber {
     /// A web page: the text pieces of the post or message holding the start
     /// (or of the whole page for page-long reads), searching from that piece.
     func webLocator(web: AXUIElement, start marker: CFTypeRef?, element hint: AXUIElement?, wholePage: Bool) -> WordLocator {
-        TextRunLocator(grabber: self) { [self] in
+        var pid: pid_t = 0
+        AXUIElementGetPid(web, &pid)
+        return TextRunLocator(grabber: self, pid: pid) { [self] in
             let fromMarker = marker.flatMap { paramValue(web, "AXUIElementForTextMarker", $0) }
                 .flatMap { CFGetTypeID($0) == AXUIElementGetTypeID() ? ($0 as! AXUIElement) : nil }
             guard let startEl = fromMarker ?? hint else { return nil }
