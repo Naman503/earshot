@@ -61,6 +61,36 @@ public enum OutputPolicy: String, CaseIterable, Codable, Sendable {
 }
 
 /// What to do with other audio (videos, music) while reading.
+/// A single key that does something only while it's held down on its own.
+public enum HoldKey: String, CaseIterable, Codable, Sendable {
+    case none, fn, control, option, rightOption, rightCommand, shift
+
+    public var title: String {
+        switch self {
+        case .none: "Off"
+        case .fn: "fn / 🌐"
+        case .control: "Control ⌃"
+        case .option: "Option ⌥ (either)"
+        case .rightOption: "Right Option ⌥"
+        case .rightCommand: "Right Command ⌘"
+        case .shift: "Shift ⇧"
+        }
+    }
+
+    /// Virtual key codes of the physical keys.
+    public var keyCodes: Set<Int64> {
+        switch self {
+        case .none: []
+        case .fn: [63]
+        case .control: [59, 62]
+        case .option: [58, 61]
+        case .rightOption: [61]
+        case .rightCommand: [54]
+        case .shift: [56, 60]
+        }
+    }
+}
+
 /// Where reading "to the end" stops on web pages and chat apps.
 public enum ReadScope: String, CaseIterable, Codable, Sendable {
     case message, conversation, page

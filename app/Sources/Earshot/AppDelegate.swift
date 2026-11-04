@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let notifications = NotificationWatcher()
     private(set) var pageWatcher: PageWatcher!
     private var macDictation: MacDictation!
+    private var holdKeys: HoldKeys!
     private var hud: HUD!
     private var statusItem: NSStatusItem!
     private var settingsWindow: NSWindow?
@@ -34,6 +35,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         pageWatcher = PageWatcher(settings: settings, reader: reader, grabber: grabber)
         macDictation = MacDictation(reader: reader)
         macDictation.watchKeys()
+        holdKeys = HoldKeys(settings: settings, reader: reader)
+        holdKeys.start()
         HotKeys.onRelease = { [weak self] action in
             if action == .dictate { self?.macDictation.released() }
             if action == .boost { self?.boostReleased() }
@@ -93,6 +96,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.async { self?.reader.applyAudioSettings() }
         }.store(in: &bag)
         settings.$speed.dropFirst().debounce(for: .milliseconds(400), scheduler: DispatchQueue.main).sink { [weak self] _ in
+            self?.reader.speedChanged()
+        }.store(in: &bag)
+        settings.$slowSpeed.dropFirst().debounce(for: .milliseconds(400), scheduler: DispatchQueue.main).sink { [weak self] _ in
             self?.reader.speedChanged()
         }.store(in: &bag)
         settings.$boostSpeed.dropFirst().debounce(for: .milliseconds(400), scheduler: DispatchQueue.main).sink { [weak self] _ in

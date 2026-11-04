@@ -129,7 +129,7 @@ private struct HowToTab: View {
                 row(.previousParagraph, nil)
                 row(.faster, nil)
                 row(.slower, nil)
-                row(.boost, "Jumps to your boost speed and back, smoothly. Hold it for a short burst.")
+                row(.boost, "Jumps to your boost speed and back, smoothly. Or hold fn alone to go fast and Control alone to go slow, only while held (Voice & speed).")
             }
             Section("Dictation") {
                 row(.dictate, "Starts the Mac's own dictation: hold the keys and talk, then let go, or tap to start and stop. Earshot stops reading and gets out of the audio path first, and starts dictation again if the microphone doesn't open.")
@@ -193,7 +193,19 @@ private struct VoiceTab: View {
                         Text(String(format: "%.2f×", settings.boostSpeed)).monospacedDigit().frame(width: 52)
                     }
                 }
-                Text("The boost shortcut (\(settings.shortcuts[.boost].map(HotKeys.describe) ?? "not set")) glides to this speed and back without restarting the sentence. Tap to switch, hold for a burst.")
+                LabeledContent("Slow speed") {
+                    HStack {
+                        Slider(value: $settings.slowSpeed, in: 0.7...3.0, step: 0.05)
+                        Text(String(format: "%.2f×", settings.slowSpeed)).monospacedDigit().frame(width: 52)
+                    }
+                }
+                Picker("Hold to speed up", selection: $settings.holdFasterKey) {
+                    ForEach(HoldKey.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                Picker("Hold to slow down", selection: $settings.holdSlowerKey) {
+                    ForEach(HoldKey.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                Text("While reading, hold the key on its own to glide to the boost or slow speed; let go to return to normal. Pressing it with another key (⌃C, fn+F1…) does nothing. The boost shortcut (\(settings.shortcuts[.boost].map(HotKeys.describe) ?? "not set")) still switches until pressed again.")
                     .font(.caption).foregroundStyle(.secondary)
                 Text("Click a voice to hear it at this speed.").font(.caption).foregroundStyle(.secondary)
                 ForEach(VoiceCatalog.grouped(available: kokoro.voices), id: \.title) { group in

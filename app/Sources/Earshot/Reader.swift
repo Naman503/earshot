@@ -42,11 +42,20 @@ final class Reader: ObservableObject {
     private var bakedSpeed = 1.0
     /// Speed each prepared chunk was generated at (Kokoro bakes the speed in).
     private var bakedFor: [Int: Double] = [:]
-    /// Boost shortcut on: reading at `settings.boostSpeed`.
-    @Published private(set) var boosted = false
+    enum SpeedMode { case normal, boost, slow }
+    /// Boost (`settings.boostSpeed`) or slow (`settings.slowSpeed`) instead of the normal speed.
+    @Published private(set) var speedMode: SpeedMode = .normal
+    var boosted: Bool { speedMode == .boost }
+    private var regenerate: DispatchWorkItem?
     private var rampTimer: Timer?
     /// The speed in use right now.
-    var speed: Double { boosted ? settings.boostSpeed : settings.speed }
+    var speed: Double {
+        switch speedMode {
+        case .normal: settings.speed
+        case .boost: settings.boostSpeed
+        case .slow: settings.slowSpeed
+        }
+    }
     private var usesKokoro = false
     /// First chunk of a reading gets a short silent lead-in.
     private var leadInIndex: Int?
@@ -259,18 +268,34 @@ final class Reader: ObservableObject {
 
     func changeSpeed(by delta: Double) {
         let next = (max(0.7, min(4.0, speed + delta)) * 20).rounded() / 20
-        if boosted { settings.boostSpeed = next } else { settings.speed = next }
-        flash(String(format: boosted ? "Boost %.2g×" : "Speed %.2g×", next))
+        switch speedMode {
+        case .normal: settings.speed = next
+        case .boost: settings.boostSpeed = next
+        case .slow: settings.slowSpeed = next
+        }
+        flash(String(format: speedMode == .boost ? "Boost %.2g×" : speedMode == .slow ? "Slow %.2g×" : "Speed %.2g×", next))
     }
 
     /// Switches between your normal speed and the boost speed, gliding over
     /// a third of a second without restarting the sentence.
     func setBoost(_ on: Bool) {
-        guard on != boosted else { return }
-        boosted = on
-        flash(String(format: on ? "Boost %.2g×" : "Normal speed %.2g×", speed))
+        setSpeedMode(on ? .boost : .normal)
+    }
+
+    /// Glides to the mode's speed on the player right away. The voice is only
+    /// regenerated at the new speed (for full clarity) once the mode has held
+    /// for a moment, so quick holds of a key cost the engine nothing.
+    func setSpeedMode(_ mode: SpeedMode, quiet: Bool = false) {
+        guard mode != speedMode else { return }
+        speedMode = mode
+        if !quiet {
+            flash(String(format: mode == .boost ? "Boost %.2g×" : mode == .slow ? "Slow %.2g×" : "Normal speed %.2g×", speed))
+        }
         applyAudioSettings(ramp: true)
-        speedChanged()
+        regenerate?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.speedChanged() }
+        regenerate = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
     }
 
     /// Applies volume, and speed on the player at once (or gliding, with

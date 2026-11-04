@@ -16,6 +16,11 @@ final class Settings: ObservableObject {
     @Published var speed: Double { didSet { save("speed", speed) } }
     /// The speed the boost shortcut switches to.
     @Published var boostSpeed: Double { didSet { save("boostSpeed", boostSpeed) } }
+    /// The speed while the slow-down key is held.
+    @Published var slowSpeed: Double { didSet { save("slowSpeed", slowSpeed) } }
+    /// Single keys that change speed only while held down.
+    @Published var holdFasterKey: HoldKey { didSet { save("holdFasterKey", holdFasterKey.rawValue) } }
+    @Published var holdSlowerKey: HoldKey { didSet { save("holdSlowerKey", holdSlowerKey.rawValue) } }
     /// 0...2, where values above 1 boost loudness through a limiter.
     @Published var volume: Double { didSet { save("volume", volume) } }
 
@@ -124,6 +129,9 @@ final class Settings: ObservableObject {
         appleVoiceID = d.string(forKey: "appleVoiceID") ?? ""
         speed = d.object(forKey: "speed") as? Double ?? 1.8
         boostSpeed = d.object(forKey: "boostSpeed") as? Double ?? 3.0
+        slowSpeed = d.object(forKey: "slowSpeed") as? Double ?? 1.3
+        holdFasterKey = d.string(forKey: "holdFasterKey").flatMap(HoldKey.init) ?? .fn
+        holdSlowerKey = d.string(forKey: "holdSlowerKey").flatMap(HoldKey.init) ?? .control
         volume = d.object(forKey: "volume") as? Double ?? 1.0
         skipURLs = d.object(forKey: "skipURLs") as? Bool ?? true
         skipCitations = d.object(forKey: "skipCitations") as? Bool ?? true
