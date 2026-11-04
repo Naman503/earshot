@@ -744,9 +744,11 @@ final class Reader: ObservableObject {
             chunkFrames[i].map { heard >= $0.start && heard < $0.start + $0.length } ?? false
         }), let frames = chunkFrames[chunk], let words = timings[chunk] else { return }
         let secs = Double(heard - frames.start) / rate
-        let w = words.lastIndex { $0.start <= secs }
-        // Past a word's end with the next not started: keep it lit through short gaps.
-        setSpoken(w.map { (chunk, $0) })
+        // Before a sentence's first word (the pause between sentences) there's
+        // no new word yet: keep the last one lit rather than clearing the marker,
+        // which used to make it blink off — and often vanish — every sentence.
+        guard let w = words.lastIndex(where: { $0.start <= secs }) else { return }
+        setSpoken((chunk, w))
     }
 
     private func setSpoken(_ s: (chunk: Int, word: Int)?) {

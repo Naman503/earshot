@@ -159,6 +159,13 @@ final class KokoroEngine: ObservableObject {
         return (id, task)
     }
 
+    /// A reading is about to start: have the engine bring the voice into RAM
+    /// now (it may have been pushed to disk), while the text is being grabbed.
+    func warm(voice: String) {
+        guard status == .ready else { return }
+        send(["op": "warm", "voice": voice])
+    }
+
     /// Drops every queued request older than `id` and resolves them as nil.
     func cancel(before id: Int) {
         floor = max(floor, id)

@@ -6,6 +6,7 @@ Protocol (one JSON object per line on stdin):
       speed = Kokoro's own pace; stretch = WSOLA time-compression on top. Measured with
       Whisper, natural pace + WSOLA is far clearer at 2-3x than asking Kokoro to rush.
   {"op": "cancel_before", "id": 7}   drop queued requests with a smaller id
+  {"op": "warm", "voice": "af_heart"}   a reading is about to start: page the voice in now
   {"op": "voices"}
   {"op": "ping"}
 
@@ -102,6 +103,13 @@ def main():
 
     model = load_model(MODEL_ID)
     model_path = snapshot_download(MODEL_ID)
+    # Keep the voice in RAM: when the Mac is short of memory, macOS otherwise
+    # moves the model to disk and each sentence waits seconds to read it back.
+    try:
+        import mlx.core as mx
+        mx.set_wired_limit(int(1.5 * 1024 ** 3))
+    except Exception:
+        traceback.print_exc()
     # Warm both English pipelines so the first real request is fast.
     for voice in ("af_heart", "bf_emma"):
         for _ in model.generate("Ready.", voice=voice, speed=1.0, lang_code=lang_for(voice)):
@@ -109,6 +117,7 @@ def main():
     send({"type": "ready"})
 
     queue = deque()
+    last_voice = {"v": "af_heart"}
     cond = threading.Condition()
     floor = {"id": -1}
 
@@ -128,6 +137,8 @@ def main():
                         queue.remove(m)
                 elif op == "voices":
                     send({"type": "voices", "voices": list_voices(model_path)})
+                elif op == "warm":
+                    queue.appendleft(msg)  # a reading is about to start
                 elif op == "ping":
                     send({"type": "pong"})
                 cond.notify()
@@ -137,13 +148,28 @@ def main():
 
     while True:
         with cond:
+            idle = False
             while not queue:
-                cond.wait()
-            msg = queue.popleft()
+                # Idle for 25 s: make a tiny sentence so nothing of the engine
+                # (model, pronunciation rules) gets pushed out to disk.
+                if not cond.wait(timeout=25):
+                    idle = True
+                    break
+            msg = {"op": "warm"} if idle else queue.popleft()
+        if msg.get("op") == "warm":
+            try:
+                voice = msg.get("voice") or last_voice["v"]
+                for _ in model._get_pipeline(lang_for(voice))("Ready.", voice=voice, speed=1.0):
+                    pass
+            except Exception:
+                traceback.print_exc()
+            continue
+        with cond:
             if msg["id"] < floor["id"]:
                 continue
         try:
             voice = msg.get("voice") or "af_heart"
+            last_voice["v"] = voice
             stretch = float(msg.get("stretch", 1.0))
             pipeline = model._get_pipeline(lang_for(voice))
             chunks, words, offset = [], [], 0.0

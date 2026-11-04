@@ -51,10 +51,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.menu = menu
 
         kokoro.start()
-        HotKeys.onAction = { [weak self] in self?.perform($0) }
+        HotKeys.onAction = { [weak self] action in
+            guard let self else { return }
+            if [.smartRead, .paragraph, .sentence, .fromHere, .section, .visible, .selection, .window, .clipboard, .readAgain, .summarize].contains(action) {
+                self.kokoro.warm(voice: self.settings.voice)
+            }
+            self.perform(action)
+        }
         trackpad.onGesture = { [weak self] g in
             guard let self, self.settings.gesturesEnabled, let action = self.settings.gestures[g], action != .none else { return }
             Log.write("gesture: \(g.label) → \(action.rawValue)")
+            if action != .stop, action != .pauseResume { self.kokoro.warm(voice: self.settings.voice) }
             // While a notification asks "Read it?", a reading tap means yes.
             if self.announcer.isAsking, self.settings.tapAnswersPrompt,
                [.paragraph, .smartRead, .readNotification].contains(action) {
@@ -662,7 +669,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             case "--speed-test":
                 // Muted reading with speed changes; logs whether audio is re-made at each speed.
-                waitForEngine {
+                // "--speed-test=90" first stays idle 90 s (to test a cold, swapped-out engine).
+                waitForEngine { DispatchQueue.main.asyncAfter(deadline: .now() + (Double(value) ?? 0)) {
                     let (volume, media) = (self.settings.volume, self.settings.mediaPolicy)
                     self.settings.volume = 0
                     self.settings.mediaPolicy = .keepPlaying
@@ -681,7 +689,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         self.settings.volume = volume
                         self.settings.mediaPolicy = media
                     }
-                }
+                } }
             case "--settings":
                 openSettings(tab: SettingsTab(rawValue: value) ?? .howTo)
             case "--render-settings":

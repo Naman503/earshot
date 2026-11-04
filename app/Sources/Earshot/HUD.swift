@@ -121,7 +121,7 @@ final class HUD {
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     self.busy = false
-                    if let box { self.place(box) } else { self.missed() }
+                    if let box { self.place(box) } else { self.stats.missed += 1; self.missed() }
                     self.findNext()
                 }
             }
@@ -134,7 +134,14 @@ final class HUD {
         if let t = missedSince, Date().timeIntervalSince(t) > 0.8 { marker.hide() }
     }
 
+    /// Per reading, for the log: words placed, not found, hidden (app not in front).
+    private var stats = (placed: 0, missed: 0, hidden: 0)
+
     private func hideWord() {
+        if stats.placed + stats.missed + stats.hidden > 0 {
+            Log.write("highlight: \(stats.placed) words shown, \(stats.missed) not found, \(stats.hidden) hidden (other app in front)")
+            stats = (0, 0, 0)
+        }
         pending = nil
         lastLocator = nil
         missedSince = nil
@@ -149,7 +156,8 @@ final class HUD {
 
     private func place(_ rect: CGRect) {
         missedSince = nil
-        guard sourceInFront else { marker.hide(); return }
+        guard sourceInFront else { stats.hidden += 1; marker.hide(); return }
+        stats.placed += 1
         marker.tint(for: reader.speedMode)
         marker.show(rect)
     }

@@ -18,6 +18,8 @@ public enum TextPrep {
         var s = text.replacingOccurrences(of: "\u{FFFC}", with: "\n")
         // Screen-reader labels chat apps put before each message.
         s = s.replacingOccurrences(of: #"(?m)^\s*(Claude|ChatGPT|Gemini|Copilot|You) (responded|said|wrote):\s*"#, with: "", options: .regularExpression)
+        // Hidden keyboard hints chat apps give screen readers.
+        s = s.replacingOccurrences(of: #"(?m)^\s*Use the up and down arrow keys to move between messages\.?\s*$"#, with: "", options: .regularExpression)
         s = speakableSymbols(s)
         if options.skipURLs {
             s = s.replacingOccurrences(of: #"https?://\S+|www\.\S+"#, with: " ", options: .regularExpression)
