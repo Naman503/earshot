@@ -313,7 +313,8 @@ final class TextGrabber {
             // part of the sentence: read its label. Other controls stay silent.
             if r == "AXButton" {
                 let inner = children(e).map { text($0, holds: &holds) }.joined()
-                return inner.isEmpty ? (string(e, kAXTitleAttribute) ?? string(e, kAXDescriptionAttribute) ?? "") : inner
+                let label = inner.isEmpty ? (string(e, kAXTitleAttribute) ?? string(e, kAXDescriptionAttribute) ?? "") : inner
+                return label.isEmpty ? "" : " " + label + " "  // not glued to the words around it
             }
             if skip.contains(r ?? "") { return "" }
             return readingChildren(e, role: r).map { text($0, holds: &holds) }.joined()
@@ -1035,6 +1036,12 @@ final class TextRunLocator: WordLocator, @unchecked Sendable {
 
     func remeasure() -> CGRect? { lastRange.flatMap { box(for: $0) } }
 
+    /// Debug: the page text around the current position.
+    var debugContext: String {
+        let lo = max(0, cursor - 60), hi = min(text.length, cursor + 160)
+        return text.substring(with: NSRange(location: lo, length: hi - lo)).replacingOccurrences(of: "\n", with: "⏎") + " (at \(cursor) of \(text.length))"
+    }
+
     /// Where `word` is on the page: the first place after the cursor that the
     /// following spoken words also come after, so a common word ("the") never
     /// jumps ahead to a later line. Close by first, then further, then (for the
@@ -1053,7 +1060,8 @@ final class TextRunLocator: WordLocator, @unchecked Sendable {
         // single miss, which made the marker jump to a repeated phrase paragraphs on.
         let lost = misses >= 3
         let passes: [(NSRange, Bool, Bool)] = found
-            ? [(near, false, true), (near, false, false)] + (lost ? [(far, false, true)] : [])
+            ? [(near, false, true), (NSRange(location: from, length: min(150, text.length - from)), false, false)]
+                + (lost ? [(far, false, true), (NSRange(location: max(0, from - 1500), length: from - max(0, from - 1500)), true, true)] : [])
             : [(ahead, false, true), (behind, true, true), (near, false, false)]
         for (window, backwards, strict) in passes {
             var search = window
@@ -1149,16 +1157,18 @@ extension TextGrabber {
         return TextRunLocator(grabber: self, pid: pid) { [self] in
             let fromMarker = marker.flatMap { paramValue(web, "AXUIElementForTextMarker", $0) }
                 .flatMap { CFGetTypeID($0) == AXUIElementGetTypeID() ? ($0 as! AXUIElement) : nil }
-            guard let startEl = fromMarker ?? hint else { return nil }
+            // The element tapped decides the area: a paragraph's start position is
+            // often reported as the end of the element before it — sometimes the
+            // previous reply, whose article then hid everything being read.
+            guard let startEl = hint ?? fromMarker else { return nil }
+            // The area reading covers (the reply, or the whole conversation, as set);
+            // failing that, the conversation area — never the whole window, whose
+            // sidebar and history used up the walk before the later text.
             var root = web
             if !wholePage {
-                var cur = startEl
-                for _ in 0..<40 {
-                    guard let p = attrElement(cur, kAXParentAttribute) else { break }
-                    let sub = string(p, kAXSubroleAttribute)
-                    if sub == "AXDocumentArticle" || sub == "AXLandmarkMain" || role(p) == "AXWebArea" { root = p; break }
-                    cur = p
-                }
+                // The same area reading uses (Settings: reply, conversation or page).
+                root = readBoundary(of: startEl, scope: readScope) ?? web
+                if CFEqual(root, web), readScope != .page { root = readBoundary(of: startEl, scope: .conversation) ?? web }
             }
             var runs: [TextRunLocator.Run] = []
             var text = ""
@@ -1166,7 +1176,7 @@ extension TextGrabber {
             var cursor: Int?
             var visited = 0
             func walk(_ e: AXUIElement) {
-                guard visited < 8000 else { return }
+                guard visited < 20000 else { return }
                 visited += 1
                 if cursor == nil, CFEqual(e, startEl) { cursor = length }
                 if role(e) == "AXStaticText" {
@@ -1184,6 +1194,12 @@ extension TextGrabber {
             walk(root)
             return runs.isEmpty ? nil : (runs, text, cursor ?? 0)
         }
+    }
+
+    /// Debug: the paragraph grab a tap on `el` would make (as webGrab does).
+    func grabForTest(_ el: AXUIElement) -> Grab? {
+        guard let web = ancestor(of: el, role: "AXWebArea"), let f = frame(el) else { return nil }
+        return webGrab(.paragraph, web: web, el: el, at: CGPoint(x: f.minX + 5, y: f.minY + min(f.height / 2, 8)))
     }
 
     /// Debug: a web locator starting at `el`'s paragraph, plus that paragraph's text.

@@ -796,7 +796,8 @@ final class Reader: ObservableObject {
         let isTechnical = s.chunk < technical.count && technical[s.chunk]
         if locator != nil, settings.highlightWords {
             if isTechnical {
-                onWord?(nil, "", locator)
+                // Code read fast can't be followed on the page; keep the last
+                // word lit (clearing it also threw away the finder's place).
             } else {
                 let rest = text.substring(from: NSMaxRange(w.range))
                 onWord?(text.substring(with: w.range), String(rest.prefix(60)), locator)

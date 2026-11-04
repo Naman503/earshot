@@ -288,7 +288,13 @@ extension TextPrep {
     public static func pieces(_ text: String, technical mode: TechnicalText) -> [Piece] {
         var out: [Piece] = []
         var lastWasSkippedCode = false
-        for (i, line) in text.components(separatedBy: "\n").filter({ !$0.isEmpty }).enumerated() {
+        var lines = text.components(separatedBy: "\n").filter { !$0.isEmpty }
+        // A mod notice is a name line ("session-board") then "reloaded (8 hooks: …)".
+        for i in lines.indices.reversed() where i > 0 && lines[i].range(of: #"^reloaded \(\d+ hooks?\b"#, options: .regularExpression) != nil
+            && !lines[i - 1].trimmingCharacters(in: .whitespaces).contains(" ") {
+            lines[i - 1] = ""
+        }
+        for (i, line) in lines.filter({ !$0.isEmpty && !isChangeSummary($0) }).enumerated() {
             guard mode != .read, isTechnical(line) else {
                 // A short first piece makes reading start sooner (~0.3 s less).
                 out += chunks(line, firstMaxLength: out.isEmpty ? 60 : 220).map { Piece(text: $0, paragraph: i, technical: false) }
@@ -305,6 +311,15 @@ extension TextPrep {
             out += split(spoken, limit: 220).map { Piece(text: $0, paragraph: i, technical: true) }
         }
         return out
+    }
+
+    /// The file-change card under an agent's reply ("Changed 3 files",
+    /// "ci-runner.py 145 additions, 212 deletions", "See all") and mod notices
+    /// ("session-board reloaded (8 hooks: …)").
+    public static func isChangeSummary(_ line: String) -> Bool {
+        let t = line.trimmingCharacters(in: .whitespaces)
+        return t.range(of: #"^(Changed|Created|Edited|Deleted) \d+ files?$|\d+ additions?, \d+ deletions?$|\d+ added, \d+ removed$|^See all\b|reloaded \(\d+ hooks?\b"#,
+                       options: .regularExpression) != nil
     }
 
     private static let commands: Set<String> = [

@@ -288,3 +288,17 @@ final class ShortenIDTests: XCTestCase {
         XCTAssertEqual(TextPrep.shortenIDs("default 90% of 2,000 and 5432"), "default 90% of 2,000 and 5432")
     }
 }
+
+final class ChangeSummaryTests: XCTestCase {
+    func testFileChangeCardIsDropped() {
+        let text = "Updating the docs.\nChanged 3 files\nci-runner.py 145 additions, 212 deletions\nSee all 296 additions, 290 deletions\nDone."
+        XCTAssertEqual(TextPrep.pieces(text, technical: .fast).map(\.text), ["Updating the docs.", "Done."])
+    }
+}
+
+final class ModNoticeTests: XCTestCase {
+    func testModNoticeIsDropped() {
+        let text = "Tests pass.\nsession-board\nreloaded (8 hooks: session.start, tool.call)\nThe same-file check is now silent."
+        XCTAssertEqual(TextPrep.pieces(text, technical: .fast).map(\.text), ["Tests pass.", "The same-file check is now silent."])
+    }
+}

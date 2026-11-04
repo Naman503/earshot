@@ -722,6 +722,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         }
                     }
                 }
+            case "--follow-test":
+                // "App|needle": reads nothing aloud. Prepares the reading a tap there would
+                // make and runs every word through the page finder, logging where it fails.
+                DispatchQueue.global().async {
+                    guard let el = self.grabber.findText(inApp: value.components(separatedBy: "|")[0], needle: value.components(separatedBy: "|")[1]),
+                          var g = self.grabber.grabForTest(el), let loc = g.locator else { Log.write("follow-test: no grab"); return }
+                    let s = DispatchQueue.main.sync { self.settings }
+                    g.text = TextUnits.expand(current: g.text, before: g.before ?? "", after: g.after ?? "",
+                                              paragraphsBefore: s.paragraphsBefore, paragraphsAfter: s.paragraphsAfter)
+                    let text = TextPrep.apply(s.pronunciations, to: TextPrep.clean(g.text, options: s.textOptions))
+                    var found = 0, missed = 0
+                    for piece in TextPrep.pieces(text, technical: s.technicalText) where !piece.technical {
+                        let ns = piece.text as NSString
+                        var line = ""
+                        for w in SpokenWord.grouped(SpokenWord.estimated(for: piece.text, duration: 10)) {
+                            let phrase = ns.substring(with: w.range)
+                            let ok = loc.locate(phrase, next: String(ns.substring(from: NSMaxRange(w.range)).prefix(60))) != nil
+                            if ok { found += 1 } else {
+                                if missed == 0, let r = loc as? TextRunLocator { Log.write("follow-test: first miss “\(phrase)” near: \(r.debugContext)") }
+                                missed += 1
+                            }
+                            line += ok ? phrase + " " : "[\(phrase)] "
+                        }
+                        Log.write("follow-test: \(line)")
+                    }
+                    Log.write("follow-test: \(found) found, \(missed) missed")
+                }
             case "--speed-test":
                 // Muted reading with speed changes; logs whether audio is re-made at each speed.
                 // "--speed-test=90" first stays idle 90 s (to test a cold, swapped-out engine).
