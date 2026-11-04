@@ -38,6 +38,8 @@ final class Settings: ObservableObject {
     /// How far a paragraph tap reaches: paragraphs above, and below (-1 = to the end).
     @Published var paragraphsBefore: Int { didSet { save("paragraphsBefore", paragraphsBefore) } }
     @Published var paragraphsAfter: Int { didSet { save("paragraphsAfter", paragraphsAfter) } }
+    /// Where "to the end" and "read from here" stop.
+    @Published var readScope: ReadScope { didSet { save("readScope", readScope.rawValue) } }
     /// A tap on selected text reads the selection.
     @Published var tapReadsSelection: Bool { didSet { save("tapReadsSelection", tapReadsSelection) } }
     @Published var pronunciations: [Pronunciation] { didSet { saveJSON("pronunciations", pronunciations) } }
@@ -133,6 +135,7 @@ final class Settings: ObservableObject {
         technicalSpeed = d.object(forKey: "technicalSpeed") as? Double ?? 4.0
         paragraphsBefore = d.object(forKey: "paragraphsBefore") as? Int ?? 0
         paragraphsAfter = d.object(forKey: "paragraphsAfter") as? Int ?? 0
+        readScope = d.string(forKey: "readScope").flatMap(ReadScope.init) ?? .message
         tapReadsSelection = d.object(forKey: "tapReadsSelection") as? Bool ?? true
         pronunciations = Self.loadJSON("pronunciations", from: d) ?? []
         pauseForCalls = d.object(forKey: "pauseForCalls") as? Bool ?? true

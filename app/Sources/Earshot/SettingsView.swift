@@ -633,6 +633,9 @@ private struct ReadingTab: View {
                     ForEach(1...10, id: \.self) { Text("\($0)").tag($0) }
                     Text("To the end").tag(-1)
                 }
+                Picker("“To the end” and “Read from here” stop at", selection: $settings.readScope) {
+                    ForEach(ReadScope.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
                 Toggle("If text is selected, a tap reads the selection", isOn: $settings.tapReadsSelection)
             } header: {
                 Text("How much “Read paragraph” reads")

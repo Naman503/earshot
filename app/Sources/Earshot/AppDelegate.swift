@@ -68,6 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         settings.$shortcuts.sink { [weak self] in self?.hotKeys.register($0) }.store(in: &bag)
+        settings.$readScope.sink { [weak self] in self?.grabber.readScope = $0 }.store(in: &bag)
         settings.$gestures.combineLatest(settings.$gesturesEnabled).sink { [weak self] gestures, enabled in
             guard let self else { return }
             if enabled {

@@ -38,6 +38,8 @@ final class TextGrabber {
     private var enabledPIDs = Set<pid_t>()
     private let lock = NSLock()
     private let maxChars = 60_000
+    /// Where reading "to the end" stops (set from Settings).
+    nonisolated(unsafe) var readScope: ReadScope = .message
 
     init() {
         AXUIElementSetMessagingTimeout(system, 1.0)
@@ -166,7 +168,7 @@ final class TextGrabber {
         case .fromHere:
             let sentence = paramValue(web, "AXSentenceTextMarkerRangeForTextMarker", marker)
             let start: CFTypeRef = sentence.map { AXTextMarkerRangeCopyStartMarker($0 as! AXTextMarkerRange) } ?? marker
-            if let end = attr(web, "AXEndTextMarker") {
+            if let (_, end) = boundaryMarkers(of: el, web: web) {
                 range = AXTextMarkerRangeCreate(nil, start as! AXTextMarker, end as! AXTextMarker)
             }
         case .window:
@@ -196,9 +198,12 @@ final class TextGrabber {
         }
         if unit == .paragraph, let n = blockNeighbours(of: el) {
             grab.before = n.before
-            grab.after = n.after
+            // A tap between lines starts "below" at the tapped paragraph itself.
+            var after = n.after.components(separatedBy: "\n")
+            if let first = after.first, normalizedWord(first) == normalizedWord(text) { after.removeFirst() }
+            grab.after = after.joined(separator: "\n")
         } else if unit == .paragraph, CFGetTypeID(range) == AXTextMarkerRangeGetTypeID(),
-           let docStart = attr(web, "AXStartTextMarker"), let docEnd = attr(web, "AXEndTextMarker") {
+           let (docStart, docEnd) = boundaryMarkers(of: el, web: web) {
             let r = range as! AXTextMarkerRange
             grab.before = paramString(web, "AXStringForTextMarkerRange",
                                       AXTextMarkerRangeCreate(nil, docStart as! AXTextMarker, AXTextMarkerRangeCopyStartMarker(r))).map { String($0.suffix(30_000)) }
@@ -231,16 +236,38 @@ final class TextGrabber {
     /// inside the post or message it belongs to (an `article`, else the page's
     /// main area), so "paragraphs above / below" never runs into the rest of
     /// the chat, the sidebar or the message box.
-    func blockNeighbours(of el: AXUIElement) -> (before: String, after: String)? {
-        var boundary: AXUIElement?
+    /// The element reading "to the end" stays inside: the reply or post
+    /// (`article`), the conversation (`feed`, else the main area), or the page.
+    /// Side panels, the message box and other panes are outside the first two.
+    func readBoundary(of el: AXUIElement, scope: ReadScope) -> AXUIElement? {
         var cur = el
-        for _ in 0..<40 {
+        var main: AXUIElement?
+        for _ in 0..<60 {
             guard let parent = attrElement(cur, kAXParentAttribute) else { break }
             let sub = string(parent, kAXSubroleAttribute)
-            if sub == "AXDocumentArticle" || sub == "AXLandmarkMain" || role(parent) == "AXWebArea" { boundary = parent; break }
+            if role(parent) == "AXWebArea" { return main ?? parent }
+            switch scope {
+            case .message:
+                if sub == "AXDocumentArticle" || sub == "AXLandmarkMain" { return parent }
+            case .conversation:
+                if sub == "AXApplicationGroup", string(parent, "AXRoleDescription") == "feed" { return parent }
+                if sub == "AXLandmarkMain" { main = main ?? parent }
+            case .page:
+                break
+            }
             cur = parent
         }
-        guard let boundary else { return nil }
+        return main
+    }
+
+    func blockNeighbours(of el: AXUIElement) -> (before: String, after: String)? {
+        guard let boundary = readBoundary(of: el, scope: readScope) else { return nil }
+        // el and its ancestors up to the boundary, to place a tap that landed
+        // between lines or on a tool row.
+        var chain: [AXUIElement] = []
+        var up: AXUIElement? = el
+        while let u = up, !CFEqual(u, boundary), chain.count < 30 { chain.append(u); up = attrElement(u, kAXParentAttribute) }
+        var startAt: Int?
         let inline: Set<String> = ["AXStaticText", "AXLink", "AXImage", "AXListMarker"]
         let skip: Set<String> = ["AXButton", "AXTextField", "AXTextArea", "AXComboBox", "AXCheckBox", "AXRadioButton",
                                  "AXPopUpButton", "AXMenuButton", "AXToolbar", "AXMenu", "AXImage"]
@@ -255,9 +282,12 @@ final class TextGrabber {
             return children(e).map { text($0, holds: &holds) }.joined()
         }
         func walk(_ e: AXUIElement) {
-            guard visited < 6000 else { return }
+            guard visited < 12000 else { return }
             visited += 1
             let r = role(e) ?? ""
+            if startAt == nil, current == nil, CFEqual(e, el) || (skip.contains(r) && chain.contains { CFEqual($0, e) }) {
+                startAt = blocks.count
+            }
             if skip.contains(r) { return }
             let kids = children(e)
             // A block that has its own text runs is one paragraph, whatever
@@ -279,8 +309,20 @@ final class TextGrabber {
             kids.forEach(walk)
         }
         walk(boundary)
-        guard visited < 6000, let i = current else { return nil }
-        return (blocks[..<i].joined(separator: "\n"), blocks[(i + 1)...].joined(separator: "\n"))
+        guard visited < 12000 else { return nil }
+        if let i = current { return (blocks[..<i].joined(separator: "\n"), blocks[(i + 1)...].joined(separator: "\n")) }
+        guard let i = startAt else { return nil }
+        return (blocks[..<i].joined(separator: "\n"), blocks[i...].joined(separator: "\n"))
+    }
+
+    /// Start and end of the text reading stays inside (see `readBoundary`).
+    private func boundaryMarkers(of el: AXUIElement, web: AXUIElement) -> (CFTypeRef, CFTypeRef)? {
+        if let b = readBoundary(of: el, scope: readScope), !CFEqual(b, web),
+           let r = paramValue(web, "AXTextMarkerRangeForUIElement", b), CFGetTypeID(r) == AXTextMarkerRangeGetTypeID() {
+            return (AXTextMarkerRangeCopyStartMarker(r as! AXTextMarkerRange), AXTextMarkerRangeCopyEndMarker(r as! AXTextMarkerRange))
+        }
+        guard let start = attr(web, "AXStartTextMarker"), let end = attr(web, "AXEndTextMarker") else { return nil }
+        return (start, end)
     }
 
     /// The heading-to-heading run of blocks around `el`: find the nearest

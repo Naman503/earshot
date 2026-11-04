@@ -61,6 +61,19 @@ public enum OutputPolicy: String, CaseIterable, Codable, Sendable {
 }
 
 /// What to do with other audio (videos, music) while reading.
+/// Where reading "to the end" stops on web pages and chat apps.
+public enum ReadScope: String, CaseIterable, Codable, Sendable {
+    case message, conversation, page
+
+    public var title: String {
+        switch self {
+        case .message: "End of this reply or post"
+        case .conversation: "End of the conversation (not side panels or the message box)"
+        case .page: "End of the whole page"
+        }
+    }
+}
+
 public enum MediaPolicy: String, CaseIterable, Codable, Sendable {
     case duck, pauseAndResume, keepPlaying
 
