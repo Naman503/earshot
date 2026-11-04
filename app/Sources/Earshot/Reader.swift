@@ -63,6 +63,7 @@ final class Reader: ObservableObject {
     /// Paragraph number of each chunk (for paragraph skips).
     private var paragraphOf: [Int] = []
     private var callTimer: Timer?
+    private var checkingCall = false
     private var pausedForCall = false
     /// Runs when this reading is cut short (Esc, a new tap, headphones gone).
     private var onInterrupt: (() -> Void)?
@@ -73,6 +74,8 @@ final class Reader: ObservableObject {
     private var versions: [Int: [SpeedMode: Version]] = [:]
     /// Which chunks are code / commands, read at the fast speed.
     private var technical: [Bool] = []
+    /// When the current reading was asked for (to log how fast it started).
+    private var readStartedAt: Date?
     /// When the untouched audio runs out after a speed change (for the log).
     private var switchAt: Date?
     /// Word timings per chunk, in seconds from the start of its buffer.
@@ -90,6 +93,7 @@ final class Reader: ObservableObject {
         self.audio = audio
         self.kokoro = kokoro
         audio.onRouteChange = { [weak self] in self?.routeChanged() }
+        audio.onEngineReset = { [weak self] in self?.engineReset() }
     }
 
     var isActive: Bool { state != .idle }
@@ -118,6 +122,7 @@ final class Reader: ObservableObject {
             return false
         }
         Log.write("read: \(parts.count) chunks from \(source), \(text.count) chars")
+        readStartedAt = Date()
         let started = start(parts, at: 0, quiet: quiet, onFinish: onFinish)
         if started {
             self.locator = locator
@@ -194,6 +199,9 @@ final class Reader: ObservableObject {
     }
 
     func stop(resumeMedia: Bool = true) {
+        if isActive, !chunks.isEmpty {
+            Log.write("read: ended at sentence \(min(index + 1, chunks.count)) of \(chunks.count)\(index >= chunks.count ? " (finished)" : " (stopped)")")
+        }
         readID += 1
         playToken += 1
         audio.player.stop()
@@ -258,10 +266,21 @@ final class Reader: ObservableObject {
         guard on, settings.pauseForCalls else { return }
         callTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, self.state == .speaking || self.state == .preparing, MediaControl.onCall() else { return }
-                self.togglePause()
-                self.pausedForCall = true
-                self.flash("Paused — a call is using the microphone")
+                guard let self, self.state == .speaking || self.state == .preparing, !self.checkingCall else { return }
+                // Asking the audio system about every app can be slow; never on the main thread.
+                self.checkingCall = true
+                DispatchQueue.global(qos: .utility).async {
+                    let onCall = MediaControl.onCall()
+                    DispatchQueue.main.async {
+                        MainActor.assumeIsolated {
+                            self.checkingCall = false
+                            guard onCall, self.state == .speaking || self.state == .preparing else { return }
+                            self.togglePause()
+                            self.pausedForCall = true
+                            self.flash("Paused — a call is using the microphone")
+                        }
+                    }
+                }
             }
         }
     }
@@ -304,11 +323,20 @@ final class Reader: ObservableObject {
     /// made, so there's no wait, no gap and no repeated word. Returns false
     /// when the other version isn't there (then `speedChanged` re-voices).
     private func switchInstantly() -> Bool {
-        guard usesKokoro, isActive, let playing = scheduled.first, let old = cache[playing],
-              let new = versions[playing]?[speedMode], let frames = chunkFrames[playing],
-              let node = audio.player.lastRenderTime, let t = audio.player.playerTime(forNodeTime: node) else { return false }
+        guard usesKokoro, isActive, let playing = scheduled.first else {
+            if isActive { Log.write("speed switch: nothing queued (sentence \(index + 1), state \(state), cached \(cache.keys.sorted()), requested \(requested.sorted()))") }
+            return false
+        }
+        guard let old = cache[playing], let new = versions[playing]?[speedMode], let frames = chunkFrames[playing],
+              let node = audio.player.lastRenderTime, let t = audio.player.playerTime(forNodeTime: node) else {
+            Log.write("speed switch: no ready version for sentence \(playing + 1) (versions: \(versions[playing].map { "\($0.keys.count)" } ?? "none"))")
+            return false
+        }
         let oldWords = versions[playing]?.values.first { $0.buffer === old }?.words ?? []
-        guard !oldWords.isEmpty, oldWords.count == new.words.count else { return false }
+        guard !oldWords.isEmpty, oldWords.count == new.words.count else {
+            Log.write("speed switch: versions don't line up (\(oldWords.count) vs \(new.words.count) words)")
+            return false
+        }
         let rate = old.format.sampleRate
         let at = max(0, min(t.sampleTime - frames.start, AVAudioFramePosition(old.frameLength)))
         let now = Double(at) / rate
@@ -317,9 +345,21 @@ final class Reader: ObservableObject {
         func gapMiddle(_ w: [SpokenWord], _ k: Int) -> Double {
             k > 0 ? (w[k - 1].end + w[k].start) / 2 : max(0, w[k].start - 0.03)
         }
-        let cutOld = k.map { AVAudioFramePosition(gapMiddle(oldWords, $0) * rate) } ?? AVAudioFramePosition(old.frameLength)
-        let cutNew = k.map { AVAudioFramePosition(gapMiddle(new.words, $0) * rate) } ?? 0
-        guard cutOld > at else { return false }
+        // Cut in the pause before word k — or right here if we're already past
+        // the middle of that pause (it's silence either way) — and start the new
+        // version the same distance before the same word.
+        var cutOld = AVAudioFramePosition(old.frameLength), cutNew: AVAudioFramePosition = 0
+        if let k {
+            let oldTime = max(gapMiddle(oldWords, k), now + 0.02)
+            let lead = max(0, oldWords[k].start - oldTime)
+            let newFloor = k > 0 ? new.words[k - 1].end : 0
+            cutOld = AVAudioFramePosition(oldTime * rate)
+            cutNew = AVAudioFramePosition(max(newFloor, new.words[k].start - lead) * rate)
+        }
+        // Nothing left of this sentence (only its "done" signal is pending):
+        // carry on from the next one at the new speed.
+        let sentenceOver = k == nil && cutOld <= at
+        guard cutOld > at || sentenceOver else { return false }
 
         bakedSpeed = speed
         // Sentences still being made are kept: they come with every speed, and
@@ -366,6 +406,11 @@ final class Reader: ObservableObject {
         for i in cache.keys where i > playing && versions[i] == nil { cache[i] = nil; requested.remove(i) }
         bakedFor[playing] = speed
         index = playing
+        if sentenceOver {
+            cache[playing] = nil
+            versions[playing] = nil
+            index = playing + 1
+        }
         if state != .paused { audio.player.play() }
         applyAudioSettings()
         scheduleReady()
@@ -527,7 +572,9 @@ final class Reader: ObservableObject {
         let primary = stretch(bakedSpeed)
         // The other speed modes, made from the same voice pass for instant switches.
         let modeSpeeds: [SpeedMode: Double] = [.normal: stretch(settings.speed), .boost: stretch(settings.boostSpeed), .slow: stretch(settings.slowSpeed)]
-        let also = Array(Set(modeSpeeds.values.filter { abs($0 - primary) > 0.01 }))
+        // The first sentence of a reading is made at one speed only, so it
+        // starts as fast as possible; every later one comes at all speeds.
+        let also = i == leadInIndex ? [] : Array(Set(modeSpeeds.values.filter { abs($0 - primary) > 0.01 }))
         let kokoroSession = usesKokoro
         let leadIn = i == leadInIndex ? 0.3 : 0
         Task {
@@ -546,6 +593,20 @@ final class Reader: ObservableObject {
                 return Version(buffer: buffer, words: words, timings: SpokenWord.grouped(words))
             }
             if let result, let main = version(result) {
+                if kokoroSession, also.isEmpty, modeSpeeds.values.contains(where: { abs($0 - primary) > 0.01 }) {
+                    // First sentence: made at one speed to start fast; its other
+                    // speeds follow in the background for instant switches.
+                    let others = Array(Set(modeSpeeds.values.filter { abs($0 - primary) > 0.01 }))
+                    Task {
+                        guard let more = await kokoro.synthesize(text, voice: settings.voice, stretch: others[0], also: Array(others.dropFirst())).result.value,
+                              id == readID, chunks.indices.contains(i), chunks[i] == text else { return }
+                        var all = more.alternates
+                        all[others[0]] = more
+                        for (mode, sp) in modeSpeeds where versions[i]?[mode] == nil {
+                            if let a = all.first(where: { abs($0.key - sp) < 0.01 })?.value, let v = version(a) { versions[i]?[mode] = v }
+                        }
+                    }
+                }
                 if kokoroSession {
                     var byMode: [SpeedMode: Version] = [:]
                     for (mode, sp) in modeSpeeds {
@@ -583,6 +644,10 @@ final class Reader: ObservableObject {
                 Log.write("speed switch: new audio ready \(Int(due.timeIntervalSinceNow * 1000)) ms before the switch")
                 switchAt = nil
             }
+            if let t0 = readStartedAt {
+                Log.write("read: first audio after \(Int(Date().timeIntervalSince(t0) * 1000)) ms")
+                readStartedAt = nil
+            }
             scheduled.append(i)
             chunkFrames[i] = (scheduledFrames, AVAudioFramePosition(buffer.frameLength))
             scheduledFrames += AVAudioFramePosition(buffer.frameLength)
@@ -609,7 +674,11 @@ final class Reader: ObservableObject {
             finishNaturally()
             return
         }
-        if let next = scheduled.first { show(next) } else if state == .speaking { setState(.preparing) }
+        if let next = scheduled.first { show(next) } else if state == .speaking {
+            // Ran out of audio mid-reading: the next sentence isn't ready yet.
+            Log.write("read: waiting for sentence \(index + 1) (requested: \(requested.contains(index)), failed: \(failed.contains(index)))")
+            setState(.preparing)
+        }
         fill()
         scheduleReady()
     }
@@ -705,6 +774,17 @@ final class Reader: ObservableObject {
     }
 
     // MARK: Headphones
+
+    /// The system stopped the audio engine mid-reading: restart it and carry
+    /// on from the sentence that was playing, instead of going silent.
+    private func engineReset() {
+        guard isActive, let device = audio.target(settings: settings) else { return }
+        let at = scheduled.first ?? index
+        Log.write("read: audio was reset by the system — resuming at sentence \(at + 1)")
+        let wasPaused = state == .paused
+        restartAt(at, on: device)
+        if wasPaused { audio.player.pause() }
+    }
 
     private func routeChanged() {
         guard isActive else { return }

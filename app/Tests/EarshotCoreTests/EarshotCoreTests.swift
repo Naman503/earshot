@@ -226,3 +226,13 @@ final class TechnicalTextTests: XCTestCase {
         XCTAssertEqual(TextPrep.speakableCode("cat /Users/naman/app/Sources/Earshot/HUD.swift"), "cat HUD.swift")
     }
 }
+
+final class SymbolTests: XCTestCase {
+    func testKeysAndArrowsAreSpoken() {
+        XCTAssertEqual(TextPrep.speakableSymbols("Hold ⌃⌥D"), "Hold Control Option D")
+        XCTAssertEqual(TextPrep.speakableSymbols("Settings → Reading"), "Settings to Reading")
+        XCTAssertEqual(TextPrep.speakableSymbols("speed is 2.5× now"), "speed is 2.5 times now")
+        XCTAssertEqual(TextPrep.speakableSymbols("4 × 2 taps"), "4 by 2 taps")
+        XCTAssertEqual(TextPrep.clean("• First point"), "First point")
+    }
+}

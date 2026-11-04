@@ -22,7 +22,7 @@ final class MediaControl {
     }
 
     /// True when another app is recording from a microphone (a call, a voice note).
-    static func onCall() -> Bool {
+    nonisolated static func onCall() -> Bool {
         let me = ProcessInfo.processInfo.processIdentifier
         return CoreAudioQuery.array(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyProcessObjectList, of: AudioObjectID.self)
             .contains { obj in

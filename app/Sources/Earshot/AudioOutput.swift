@@ -91,6 +91,8 @@ final class AudioOutput: ObservableObject {
     @Published private(set) var defaultDeviceID: AudioDeviceID = 0
     /// Called when the device list or default changes (headphones on/off).
     var onRouteChange: (() -> Void)?
+    /// The engine was stopped by the system and needs restarting.
+    var onEngineReset: (() -> Void)?
 
     let engine = AVAudioEngine()
     let player = AVAudioPlayerNode()
@@ -114,8 +116,14 @@ final class AudioOutput: ObservableObject {
         refreshDevices()
         listen(kAudioHardwarePropertyDevices)
         listen(kAudioHardwarePropertyDefaultOutputDevice)
-        NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { _ in
+        NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+            // macOS stopped the engine (earbuds renegotiated, another app changed
+            // the format, a tap was added). Whoever is playing must restart it.
             Log.write("audio: engine configuration changed")
+            MainActor.assumeIsolated {
+                self?.currentDevice = 0  // forces a full restart on the next prepare
+                self?.onEngineReset?()
+            }
         }
     }
 

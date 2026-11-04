@@ -639,6 +639,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         DispatchQueue.main.async { window.close() }
                     }
                 }
+            case "--read-muted":
+                // "App": muted reading of a long paragraph in that app, with the page
+                // highlight, to measure what the app does while reading.
+                waitForEngine {
+                    DispatchQueue.global().async {
+                        guard let el = self.grabber.findText(inApp: value, needle: "*"), let loc = self.grabber.locatorForTest(el) else {
+                            Log.write("read-muted: nothing found"); return
+                        }
+                        DispatchQueue.main.async {
+                            let (volume, media) = (self.settings.volume, self.settings.mediaPolicy)
+                            self.settings.volume = 0
+                            self.settings.mediaPolicy = .keepPlaying
+                            self.reader.read(loc.text, source: "muted test", quiet: true, locator: loc.locator)
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 20) {
+                                self.reader.stop()
+                                self.settings.volume = volume
+                                self.settings.mediaPolicy = media
+                            }
+                        }
+                    }
+                }
             case "--speed-test":
                 // Muted reading with speed changes; logs whether audio is re-made at each speed.
                 waitForEngine {

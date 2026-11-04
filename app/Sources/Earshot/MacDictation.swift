@@ -141,11 +141,31 @@ final class MacDictation {
         verify(want, since: Date(), step: 0)
     }
 
+    private let probeQueue = DispatchQueue(label: "earshot.dictation", qos: .userInitiated)
+    private var probing = false
+
+    /// Reads dictation's state (mic, menu) off the main thread, so a busy app
+    /// can never freeze Earshot, then hands it back here.
+    private func probe(_ done: @escaping @MainActor (_ hearing: Bool, _ menuOn: Bool) -> Void) {
+        guard !probing else { return }
+        probing = true
+        probeQueue.async {
+            let hearing = Self.dictationHearing()
+            let menuOn = Self.menuItem(starting: false) != nil
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self.probing = false
+                    done(hearing, menuOn)
+                }
+            }
+        }
+    }
+
     /// The press's expected result while it's being checked.
     private var expected: Bool?
 
     /// On means the dictation menu says so or its microphone is open.
-    private static func dictationOn() -> Bool { dictationHearing() || menuItem(starting: false) != nil }
+    nonisolated private static func dictationOn() -> Bool { dictationHearing() || menuItem(starting: false) != nil }
 
     /// Checks the press did what was expected, and finishes it if it didn't.
     /// Turning on: waits for the microphone (a cold start takes ~1–2 s); if
@@ -160,47 +180,48 @@ final class MacDictation {
         check = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] t in
             MainActor.assumeIsolated {
                 guard let self, id == self.checkID else { t.invalidate(); return }
-                let elapsed = Date().timeIntervalSince(started)
-                let hearing = Self.dictationHearing()
-                let menuOn = Self.menuItem(starting: false) != nil
-                if want {
-                    if hearing {
-                        t.invalidate()
-                        self.expected = nil
-                        Log.write("mac-dictation: listening after \(Int(elapsed * 1000)) ms\(step > 0 ? " (fixed)" : "")")
-                        self.follow()
-                    } else if menuOn {
-                        seenOn = true
-                        if elapsed > (step == 0 ? 1.6 : 2.5) {
+                self.probe { hearing, menuOn in
+                    guard id == self.checkID, t.isValid else { return }
+                    let elapsed = Date().timeIntervalSince(started)
+                    if want {
+                        if hearing {
                             t.invalidate()
-                            self.recover(step: step)
+                            self.expected = nil
+                            Log.write("mac-dictation: listening after \(Int(elapsed * 1000)) ms\(step > 0 ? " (fixed)" : "")")
+                            self.follow()
+                        } else if menuOn {
+                            seenOn = true
+                            if elapsed > (step == 0 ? 1.6 : 2.5) {
+                                t.invalidate()
+                                self.recover(step: step)
+                            }
+                        } else if elapsed > 1.3 {
+                            t.invalidate()
+                            guard step == 0, !seenOn, let item = Self.menuItem(starting: true) else {
+                                self.expected = nil
+                                self.isOn = false
+                                Log.write("mac-dictation: didn't come on")
+                                return
+                            }
+                            Log.write("mac-dictation: the press was ignored — starting dictation")
+                            AXUIElementPerformAction(item, kAXPressAction as CFString)
+                            self.verify(true, since: Date(), step: 1)
                         }
-                    } else if elapsed > 1.3 {
-                        t.invalidate()
-                        guard step == 0, !seenOn, let item = Self.menuItem(starting: true) else {
+                    } else {
+                        if !hearing && !menuOn {
+                            t.invalidate()
                             self.expected = nil
                             self.isOn = false
-                            Log.write("mac-dictation: didn't come on")
-                            return
+                            Log.write("mac-dictation: off")
+                        } else if elapsed > 1.0 {
+                            t.invalidate()
+                            self.expected = nil
+                            if let item = Self.menuItem(starting: false) {
+                                Log.write("mac-dictation: the press was ignored — stopping dictation")
+                                AXUIElementPerformAction(item, kAXPressAction as CFString)
+                            }
+                            self.isOn = false
                         }
-                        Log.write("mac-dictation: the press was ignored — starting dictation")
-                        AXUIElementPerformAction(item, kAXPressAction as CFString)
-                        self.verify(true, since: Date(), step: 1)
-                    }
-                } else {
-                    if !hearing && !menuOn {
-                        t.invalidate()
-                        self.expected = nil
-                        self.isOn = false
-                        Log.write("mac-dictation: off")
-                    } else if elapsed > 1.0 {
-                        t.invalidate()
-                        self.expected = nil
-                        if let item = Self.menuItem(starting: false) {
-                            Log.write("mac-dictation: the press was ignored — stopping dictation")
-                            AXUIElementPerformAction(item, kAXPressAction as CFString)
-                        }
-                        self.isOn = false
                     }
                 }
             }
@@ -216,8 +237,11 @@ final class MacDictation {
         check = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] t in
             MainActor.assumeIsolated {
                 guard let self, id == self.checkID else { t.invalidate(); return }
-                if Self.dictationOn() { t.invalidate(); self.follow() }
-                else if Date().timeIntervalSince(started) > 2 { t.invalidate() }
+                self.probe { hearing, menuOn in
+                    guard id == self.checkID, t.isValid else { return }
+                    if hearing || menuOn { t.invalidate(); self.follow() }
+                    else if Date().timeIntervalSince(started) > 2 { t.invalidate() }
+                }
             }
         }
     }
@@ -230,7 +254,8 @@ final class MacDictation {
         check = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] t in
             MainActor.assumeIsolated {
                 guard let self, id == self.checkID else { t.invalidate(); return }
-                if !Self.dictationOn() {
+                self.probe { hearing, menuOn in
+                    guard id == self.checkID, !hearing, !menuOn else { return }
                     t.invalidate()
                     self.isOn = false
                 }
@@ -259,12 +284,13 @@ final class MacDictation {
 
     // MARK: Helpers
 
-    private static var frontName: String { NSWorkspace.shared.frontmostApplication?.localizedName ?? "?" }
+    nonisolated private static var frontName: String { NSWorkspace.shared.frontmostApplication?.localizedName ?? "?" }
 
     /// The front app's "Start Dictation" (or, while dictating, "Stop Dictation") menu item.
-    static func menuItem(starting: Bool) -> AXUIElement? {
+    nonisolated static func menuItem(starting: Bool) -> AXUIElement? {
         guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
         let root = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(root, 0.5)  // a busy app must not hold us up
         guard let bar = element(root, kAXMenuBarAttribute) else { return nil }
         let wanted = starting ? "start dictation" : "stop dictation"
         for top in children(bar) {
@@ -280,12 +306,12 @@ final class MacDictation {
     }
 
     /// True once the speech service has the microphone open.
-    static func dictationHearing() -> Bool {
+    nonisolated static func dictationHearing() -> Bool {
         listeningApps().contains("com.apple.CoreSpeech")
     }
 
     /// Bundle ids of other processes with a microphone open.
-    static func listeningApps() -> [String] {
+    nonisolated static func listeningApps() -> [String] {
         let me = ProcessInfo.processInfo.processIdentifier
         return CoreAudioQuery.array(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyProcessObjectList, of: AudioObjectID.self)
             .compactMap { obj -> String? in
@@ -296,14 +322,14 @@ final class MacDictation {
             }
     }
 
-    private static func element(_ el: AXUIElement, _ name: String) -> AXUIElement? {
+    nonisolated private static func element(_ el: AXUIElement, _ name: String) -> AXUIElement? {
         var v: CFTypeRef?
         guard AXUIElementCopyAttributeValue(el, name as CFString, &v) == .success, let v,
               CFGetTypeID(v) == AXUIElementGetTypeID() else { return nil }
         return (v as! AXUIElement)
     }
 
-    private static func children(_ el: AXUIElement) -> [AXUIElement] {
+    nonisolated private static func children(_ el: AXUIElement) -> [AXUIElement] {
         var v: CFTypeRef?
         AXUIElementCopyAttributeValue(el, kAXChildrenAttribute as CFString, &v)
         return v as? [AXUIElement] ?? []

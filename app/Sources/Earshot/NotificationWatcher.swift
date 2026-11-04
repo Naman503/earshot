@@ -44,7 +44,7 @@ final class NotificationWatcher {
         }
         pid = app.processIdentifier
         // Banners already on screen (or in the open panel) are old news.
-        for b in banners() { markSeen(b.id) }
+        for b in Self.banners(pid: pid) { markSeen(b.id) }
 
         var obs: AXObserver?
         let callback: AXObserverCallback = { _, _, _, refcon in
@@ -78,9 +78,28 @@ final class NotificationWatcher {
         }
     }
 
+    /// Reads the banners off the main thread (a slow Notification Center
+    /// used to freeze reading), then reports new ones here.
     private func scan() {
-        guard pid > 0, AXIsProcessTrusted() else { return }
-        let fresh = banners().filter { !seenSet.contains($0.id) }
+        guard pid > 0, !scanning, AXIsProcessTrusted() else { return }
+        scanning = true
+        let pid = self.pid
+        queue.async {
+            let found = Self.banners(pid: pid)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self.scanning = false
+                    self.report(found)
+                }
+            }
+        }
+    }
+
+    private let queue = DispatchQueue(label: "earshot.notifications", qos: .utility)
+    private var scanning = false
+
+    private func report(_ found: [BannerNote]) {
+        let fresh = found.filter { !seenSet.contains($0.id) }
         guard !fresh.isEmpty else { return }
         fresh.forEach { markSeen($0.id) }
         // Many at once means the user opened the Notification Center panel.
@@ -101,8 +120,10 @@ final class NotificationWatcher {
     }
 
     /// Every banner element in Notification Center's dialog windows.
-    private func banners() -> [BannerNote] {
+    nonisolated private static func banners(pid: pid_t) -> [BannerNote] {
         let root = AXUIElementCreateApplication(pid)
+        // A busy Notification Center must never hold us up for long.
+        AXUIElementSetMessagingTimeout(root, 0.5)
         var out: [BannerNote] = []
         for window in children(root) where string(window, kAXSubroleAttribute) == "AXSystemDialog" {
             collect(window, depth: 0, into: &out)
@@ -110,7 +131,7 @@ final class NotificationWatcher {
         return out
     }
 
-    private func collect(_ el: AXUIElement, depth: Int, into out: inout [BannerNote]) {
+    nonisolated private static func collect(_ el: AXUIElement, depth: Int, into out: inout [BannerNote]) {
         guard depth < 12 else { return }
         let subrole = string(el, kAXSubroleAttribute) ?? ""
         if subrole.hasPrefix("AXNotificationCenterBanner") || subrole == "AXNotificationCenterAlert",
@@ -120,7 +141,7 @@ final class NotificationWatcher {
         for c in children(el) { collect(c, depth: depth + 1, into: &out) }
     }
 
-    private func parse(_ el: AXUIElement) -> BannerNote? {
+    nonisolated private static func parse(_ el: AXUIElement) -> BannerNote? {
         var fields: [String: String] = [:]
         for c in children(el) {
             if let id = string(c, kAXIdentifierAttribute), let v = string(c, kAXValueAttribute) { fields[id] = v }
@@ -134,13 +155,13 @@ final class NotificationWatcher {
                           title: title, subtitle: fields["subtitle"] ?? "", body: body)
     }
 
-    private func children(_ el: AXUIElement) -> [AXUIElement] {
+    nonisolated private static func children(_ el: AXUIElement) -> [AXUIElement] {
         var v: CFTypeRef?
         AXUIElementCopyAttributeValue(el, kAXChildrenAttribute as CFString, &v)
         return v as? [AXUIElement] ?? []
     }
 
-    private func string(_ el: AXUIElement, _ name: String) -> String? {
+    nonisolated private static func string(_ el: AXUIElement, _ name: String) -> String? {
         var v: CFTypeRef?
         AXUIElementCopyAttributeValue(el, name as CFString, &v)
         return v as? String
