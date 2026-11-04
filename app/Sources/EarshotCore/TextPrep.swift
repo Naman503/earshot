@@ -171,9 +171,108 @@ extension TextPrep {
 
     /// Chunks plus the paragraph each one starts in (for skipping by paragraph).
     public static func chunksWithParagraphs(_ text: String) -> [(text: String, paragraph: Int)] {
-        text.components(separatedBy: "\n").filter { !$0.isEmpty }.enumerated().flatMap { i, para in
-            chunks(para, firstMaxLength: i == 0 ? 110 : 220).map { ($0, i) }
+        pieces(text, technical: .read).map { ($0.text, $0.paragraph) }
+    }
+
+    /// What to do with code, commands, file paths and tool-call lines.
+    public enum TechnicalText: String, CaseIterable, Codable, Sendable {
+        case fast, skip, read
+
+        public var title: String {
+            switch self {
+            case .fast: "Read them very fast, with long paths shortened"
+            case .skip: "Skip them (just say “code”)"
+            case .read: "Read them like everything else"
+            }
         }
+    }
+
+    /// One piece to speak: its text, the paragraph it starts in, and whether
+    /// it's technical (to be read at the fast speed).
+    public struct Piece: Equatable, Sendable {
+        public var text: String
+        public var paragraph: Int
+        public var technical: Bool
+    }
+
+    /// Chunks with code and commands handled as asked. Consecutive technical
+    /// lines become one block; when skipped, the block is just "Code."
+    public static func pieces(_ text: String, technical mode: TechnicalText) -> [Piece] {
+        var out: [Piece] = []
+        var lastWasSkippedCode = false
+        for (i, line) in text.components(separatedBy: "\n").filter({ !$0.isEmpty }).enumerated() {
+            guard mode != .read, isTechnical(line) else {
+                out += chunks(line, firstMaxLength: out.isEmpty ? 110 : 220).map { Piece(text: $0, paragraph: i, technical: false) }
+                lastWasSkippedCode = false
+                continue
+            }
+            if mode == .skip {
+                if !lastWasSkippedCode { out.append(Piece(text: "Code.", paragraph: i, technical: false)) }
+                lastWasSkippedCode = true
+                continue
+            }
+            let spoken = speakableCode(line)
+            guard spoken.rangeOfCharacter(from: .alphanumerics) != nil else { continue }
+            out += split(spoken, limit: 220).map { Piece(text: $0, paragraph: i, technical: true) }
+        }
+        return out
+    }
+
+    private static let commands: Set<String> = [
+        "git", "npm", "npx", "yarn", "pnpm", "bun", "cd", "ls", "cat", "grep", "rg", "sed", "awk", "find", "curl", "wget",
+        "sudo", "brew", "pip", "pip3", "python", "python3", "node", "deno", "swift", "xcodebuild", "xcrun", "docker",
+        "kubectl", "ssh", "scp", "rsync", "rm", "mv", "cp", "mkdir", "touch", "chmod", "chown", "echo", "export", "make",
+        "cargo", "go", "uv", "gh", "defaults", "pkill", "killall", "ps", "tail", "head", "launchctl", "codesign", "ditto",
+        "osascript", "sh", "bash", "zsh", "source", "tar", "unzip", "jq", "wc", "sort", "diff", "systemctl", "journalctl",
+        "gradle", "gradlew", "./gradlew", "adb", "flutter", "pod", "vim", "nano", "tmux", "kill", "lsof", "env", "which",
+    ]
+
+    /// Claude / agent tool rows: "Ran 3 commands", "Read TextPrep.swift", "Edited AppDelegate.swift".
+    private static let toolVerbs: Set<String> = [
+        "ran", "running", "read", "reading", "edited", "editing", "wrote", "writing", "searched", "searching",
+        "listed", "created", "updated", "fetched", "called", "viewed", "opened", "explored", "grepped", "globbed",
+    ]
+
+    /// True for lines of code, shell commands, file paths, logs and tool rows:
+    /// text that's there to look at, not to listen to.
+    public static func isTechnical(_ line: String) -> Bool {
+        let t = line.trimmingCharacters(in: .whitespaces)
+        guard t.count >= 2 else { return false }
+        if t.hasPrefix("$ ") || t.hasPrefix("% ") || t.hasPrefix(">>> ") || t.hasPrefix("#!") { return true }
+        let words = t.split(separator: " ").map(String.init)
+        let first = words.first?.lowercased() ?? ""
+        let endsLikeProse = t.last.map { ".!?:”\"".contains($0) } ?? false
+        // Shell commands: a known program, then flags, paths or arguments.
+        if commands.contains(first), words.count >= 2, !endsLikeProse || t.contains(" -") || t.contains("/") { return true }
+        // Tool-call rows, which are short and never end like a sentence.
+        if toolVerbs.contains(first), !endsLikeProse, t.count < 140,
+           t.range(of: #"\b(commands?|files?|lines?|results?)\b|[\w-]+\.\w{1,6}\b|/"#, options: .regularExpression) != nil { return true }
+        // Mostly symbols: code, JSON, regexes, logs.
+        let letters = t.unicodeScalars.filter { CharacterSet.letters.contains($0) }.count
+        let symbols = t.unicodeScalars.filter { "{}[]()<>=;$|\\`_*#@&~^/:\"'".unicodeScalars.contains($0) }.count
+        if t.count > 6, Double(symbols) > Double(max(letters, 1)) * 0.22 { return true }
+        // Code shapes: calls, assignments, declarations, arrows.
+        if t.range(of: #"^(let|var|const|func|def|class|struct|enum|import|return|if|for|while|public|private|static|async|await|fn|val|guard|case|switch)\b.*[({=:;]"#,
+                   options: .regularExpression) != nil { return true }
+        if t.range(of: #"[\w\])]\.[a-zA-Z_]\w*\(|\w+\(.*\)\s*[;{]?$|\s=>\s|->\s|\s:=\s|==|!=|&&|\|\|"#, options: .regularExpression) != nil,
+           words.count <= 14, !endsLikeProse { return true }
+        // A bare path or file name on its own line.
+        if words.count <= 2, t.range(of: #"^[~./\w-]*/[\w./-]+$|^[\w-]+\.(swift|py|js|ts|tsx|json|md|sh|yml|yaml|toml|kt|java|go|rs|c|h|m|plist|txt|log|html|css)$"#,
+                                     options: .regularExpression) != nil { return true }
+        return false
+    }
+
+    /// Technical text made quick to hear: paths shortened to the file name,
+    /// symbols and punctuation runs dropped, identifiers split into words.
+    public static func speakableCode(_ line: String) -> String {
+        var s = line
+        // /Users/naman/…/Sources/Earshot/TextGrabber.swift → TextGrabber.swift
+        s = s.replacingOccurrences(of: #"(?:~|\.{1,2})?(?:/[\w.@-]+)+/([\w.@-]+)"#, with: "$1", options: .regularExpression)
+        s = s.replacingOccurrences(of: #"[{}\[\]()<>=;$|\\`*#@&~^"'%+]+"#, with: " ", options: .regularExpression)
+        s = s.replacingOccurrences(of: #"(?<=\w)_(?=\w)"#, with: " ", options: .regularExpression)
+        s = s.replacingOccurrences(of: #"(?<=[a-z])(?=[A-Z])"#, with: " ", options: .regularExpression)
+        s = s.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        return s.trimmingCharacters(in: .whitespaces)
     }
 }
 

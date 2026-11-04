@@ -20,7 +20,8 @@ struct Grab {
 /// Finds where a spoken word is on screen (top-left screen coordinates).
 /// Called off the main thread, one word after another, in reading order.
 protocol WordLocator: AnyObject, Sendable {
-    func locate(_ phrase: String) -> CGRect?
+    /// `next`: the words spoken right after, to tell apart repeats of a word.
+    func locate(_ phrase: String, next: String) -> CGRect?
 }
 
 /// Letters and digits only, lowercased: "Earshot's," → "earshots".
@@ -543,7 +544,8 @@ final class TextGrabber {
     func pageText(inApp name: String) -> String? { pageInfo(inApp: name)?.text }
 
     func pageInfo(inApp name: String) -> (text: String, url: String?)? {
-        guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.localizedName == name }) else { return nil }
+        let apps = NSWorkspace.shared.runningApplications.filter { $0.localizedName == name }
+        guard let app = apps.first(where: { $0.activationPolicy == .regular }) ?? apps.first else { return nil }
         enableWebAccessibility(pid: app.processIdentifier)
         let root = AXUIElementCreateApplication(app.processIdentifier)
         guard let win = attrElement(root, kAXFocusedWindowAttribute) ?? (attr(root, kAXWindowsAttribute) as? [AXUIElement])?.first else { return nil }
@@ -585,6 +587,34 @@ final class TextGrabber {
         wins.forEach(walk)
         Log.write("findText: \(wins.count) windows, visited \(visited)")
         return found
+    }
+
+    /// All text in the named app's windows, one text piece per line, with each
+    /// piece's role path (debug, to see what gets read).
+    func dumpTexts(inApp name: String) -> String {
+        let apps = NSWorkspace.shared.runningApplications.filter { $0.localizedName == name }
+        guard let app = apps.first(where: { $0.activationPolicy == .regular }) else { return "" }
+        enableWebAccessibility(pid: app.processIdentifier)
+        usleep(800_000)  // Chromium builds its tree on first request
+        let root = AXUIElementCreateApplication(app.processIdentifier)
+        var out = ""
+        var visited = 0
+        func walk(_ el: AXUIElement, _ path: String) {
+            guard visited < 40000 else { return }
+            visited += 1
+            let r = role(el) ?? "?"
+            if r == "AXStaticText" {
+                if let v = string(el, kAXValueAttribute), !v.trimmingCharacters(in: .whitespaces).isEmpty { out += "[\(path)] \(v)\n" }
+                return
+            }
+            let classes = (attr(el, "AXDOMClassList") as? [String])?.prefix(2).joined(separator: ".") ?? ""
+            let tag = (string(el, kAXSubroleAttribute) ?? r).replacingOccurrences(of: "AX", with: "") + (classes.isEmpty ? "" : ".\(classes)")
+            for c in children(el) { walk(c, String((path + ">" + tag).suffix(90))) }
+        }
+        let wins = (attr(root, kAXWindowsAttribute) as? [AXUIElement]) ?? []
+        wins.forEach { walk($0, "") }
+        Log.write("dumpTexts: \(apps.count) apps, \(wins.count) windows, visited \(visited)")
+        return out
     }
 
     /// Ancestor chain of `el` with roles, DOM classes and child counts (debug).
@@ -829,27 +859,78 @@ final class TextRunLocator: WordLocator, @unchecked Sendable {
     private var cursor = 0
     private var loaded = false
     private var found = false
+    /// Where the last word was found (debug).
+    var lastRange: NSRange?
 
     init(grabber: TextGrabber, load: @escaping () -> (runs: [Run], text: String, cursor: Int)?) {
         self.grabber = grabber
         self.load = load
     }
 
-    func locate(_ phrase: String) -> CGRect? {
+    func locate(_ phrase: String, next: String) -> CGRect? {
         if !loaded {
             loaded = true
             guard let l = load() else { return nil }
             (runs, text, cursor) = (l.runs, l.text as NSString, l.cursor)
         }
         let words = phrase.split(whereSeparator: \.isWhitespace).map(String.init)
-        guard let first = words.first, let r = find(first, from: cursor) else { return nil }
+        let following = next.split(whereSeparator: \.isWhitespace).map(String.init).prefix(3)
+        guard let first = words.first, let r = place(first, then: Array(words.dropFirst()) + following) else { return nil }
         var range = r
         for w in words.dropFirst() {
             if let n = find(w, from: NSMaxRange(range), within: 24) { range = NSUnionRange(range, n) }
         }
         found = true
         cursor = NSMaxRange(range)
+        lastRange = range
         return box(for: range)
+    }
+
+    /// Where `word` is on the page: the first place after the cursor that the
+    /// following spoken words also come after, so a common word ("the") never
+    /// jumps ahead to a later line. Close by first, then further, then (for the
+    /// first word of a reading, when paragraphs above were added) behind.
+    private func place(_ word: String, then after: [String]) -> NSRange? {
+        let core = word.trimmingCharacters(in: .punctuationCharacters.union(.symbols))
+        guard !core.isEmpty else { return nil }
+        let from = min(cursor, text.length)
+        let near = NSRange(location: from, length: min(400, text.length - from))
+        let far = NSRange(location: from, length: min(4000, text.length - from))
+        let ahead = NSRange(location: from, length: text.length - from)
+        let behind = NSRange(location: 0, length: from)
+        // (where, search backwards, the next words must follow directly)
+        let passes: [(NSRange, Bool, Bool)] = found
+            ? [(near, false, true), (near, false, false), (far, false, true)]
+            : [(ahead, false, true), (behind, true, true), (near, false, false)]
+        for (window, backwards, strict) in passes {
+            var search = window
+            while search.length > 0, let r = wholeWord(core, in: search, backwards: backwards) {
+                if follows(after, from: NSMaxRange(r), strict: strict) { return r }
+                search = backwards ? NSRange(location: search.location, length: r.location - search.location)
+                                   : NSRange(location: NSMaxRange(r), length: NSMaxRange(search) - NSMaxRange(r))
+            }
+        }
+        // Nothing confirmed: accept only a match right next to where we are.
+        if found, let r = wholeWord(core, in: NSRange(location: from, length: min(40, text.length - from)), backwards: false) { return r }
+        return nil
+    }
+
+    /// Strict: the next words (up to three) come straight after, as a phrase.
+    /// Loose: at least two of them come within the next 60 characters, in order.
+    private func follows(_ words: [String], from start: Int, strict: Bool) -> Bool {
+        let wanted = words.map { $0.trimmingCharacters(in: .punctuationCharacters.union(.symbols)) }.filter { !$0.isEmpty }
+        guard !wanted.isEmpty else { return true }
+        var at = start, hits = 0
+        for w in wanted.prefix(strict ? 3 : 4) {
+            let span = strict ? min(w.utf16.count + 8, text.length - at) : min(60, text.length - at)
+            guard span > 0, let r = wholeWord(w, in: NSRange(location: at, length: span), backwards: false) else {
+                if strict { return false }
+                continue
+            }
+            hits += 1
+            at = NSMaxRange(r)
+        }
+        return strict || hits >= min(2, wanted.count)
     }
 
     /// Box of a text range, piece by piece across elements, kept to one line.
@@ -857,9 +938,11 @@ final class TextRunLocator: WordLocator, @unchecked Sendable {
         var boxes: [CGRect] = []
         for run in runs where run.start < NSMaxRange(range) && run.start + run.length > range.location {
             let lo = max(range.location, run.start), hi = min(NSMaxRange(range), run.start + run.length)
-            let piece = text.substring(with: NSRange(location: lo, length: hi - lo)).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !piece.isEmpty, let b = grabber.textBounds(run.element, NSRange(location: lo - run.start, length: hi - lo)) else { continue }
-            boxes.append(b)
+            // Word by word: a range that wraps onto the next line would
+            // otherwise come back as one box covering both lines.
+            text.enumerateSubstrings(in: NSRange(location: lo, length: hi - lo), options: .byWords) { _, r, _, _ in
+                if let b = self.grabber.textBounds(run.element, NSRange(location: r.location - run.start, length: r.length)) { boxes.append(b) }
+            }
         }
         guard let first = boxes.first else { return nil }
         return boxes.dropFirst().reduce(first) { acc, b in abs(b.midY - acc.midY) < acc.height * 0.5 ? acc.union(b) : acc }
@@ -897,7 +980,7 @@ final class TextRunLocator: WordLocator, @unchecked Sendable {
 
 extension TextGrabber {
     /// A native text view: one run, starting at `start`.
-    func textViewLocator(_ el: AXUIElement, text: String, start: Int) -> WordLocator {
+    func textViewLocator(_ el: AXUIElement, text: String, start: Int) -> TextRunLocator {
         TextRunLocator(grabber: self) {
             ([TextRunLocator.Run(element: el, start: 0, length: (text as NSString).length)], text, start)
         }

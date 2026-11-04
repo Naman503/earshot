@@ -645,6 +645,21 @@ private struct ReadingTab: View {
                 Toggle("Citation marks like [12]", isOn: $settings.skipCitations)
                 Toggle("Emoji", isOn: $settings.skipEmoji)
             }
+            Section("Code, commands and file paths") {
+                Picker("When reading them", selection: $settings.technicalText) {
+                    ForEach(TextPrep.TechnicalText.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                if settings.technicalText == .fast {
+                    LabeledContent("Fast speed") {
+                        HStack {
+                            Slider(value: $settings.technicalSpeed, in: 2.0...4.0, step: 0.25)
+                            Text(String(format: "%.2g×", settings.technicalSpeed)).monospacedDigit().frame(width: 40)
+                        }
+                    }
+                }
+                Text("Lines like shell commands, code, JSON, long file paths and agent rows such as “Ran 3 commands” or “Read Reader.swift”.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Feedback") {
                 Toggle("Show the now-reading bar", isOn: $settings.showHUD)
                 Toggle("Outline the text that was picked up", isOn: $settings.highlightSource)

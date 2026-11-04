@@ -77,7 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }.store(in: &bag)
         reader.objectWillChange.sink { [weak self] in DispatchQueue.main.async { self?.hud.update() } }.store(in: &bag)
-        reader.onWord = { [weak self] word, locator in self?.hud.showWord(word, locator: locator) }
+        reader.onWord = { [weak self] word, next, locator in self?.hud.showWord(word, next: next, locator: locator) }
         reader.onStateChange = { [weak self] state in
             guard let self else { return }
             self.hotKeys.setEscapeActive(state != .idle && self.settings.escapeStops)
@@ -443,6 +443,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         Log.write("summarize-app: \(Int(Date().timeIntervalSince(t0) * 1000)) ms →\n\(s ?? "nil")")
                     }
                 }
+            case "--dump-text":
+                // Writes the named app's page text to the log folder, to tune what gets read.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+                    let text = self.grabber.dumpTexts(inApp: value)
+                    let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Earshot/page-text.txt")
+                    try? text.write(to: url, atomically: true, encoding: .utf8)
+                    Log.write("dump-text: \(text.count) chars")
+                }
             case "--watch-probe":
                 // URL + cost of fetching the whole page text, for auto-read tuning.
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
@@ -478,7 +486,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         var hits = 0
                         for w in words.prefix(25) {
                             let phrase = (loc.text as NSString).substring(with: w.range)
-                            let box = loc.locator.locate(phrase)
+                            let box = loc.locator.locate(phrase, next: String((loc.text as NSString).substring(from: NSMaxRange(w.range)).prefix(60)))
                             if box != nil { hits += 1 }
                             Log.write("locate-test: \(phrase) → \(box.map { "\(Int($0.minX)),\(Int($0.minY)) \(Int($0.width))x\(Int($0.height))" } ?? "nil")")
                         }
@@ -494,7 +502,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     let words = SpokenWord.grouped(SpokenWord.estimated(for: loc.text, duration: 10)).prefix(30)
                     for (n, w) in words.enumerated() {
                         DispatchQueue.main.asyncAfter(deadline: .now() + Double(n) * 0.25) {
-                            self.hud.showWord((loc.text as NSString).substring(with: w.range), locator: loc.locator)
+                            self.hud.showWord((loc.text as NSString).substring(with: w.range), next: (loc.text as NSString).substring(from: NSMaxRange(w.range)).prefix(60).description, locator: loc.locator)
                         }
                     }
                     // Screenshots of the display at two moments, into the log folder.
@@ -512,7 +520,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                             }
                         }
                     }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + Double(words.count) * 0.25 + 0.5) { self.hud.showWord(nil, locator: nil) }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + Double(words.count) * 0.25 + 0.5) { self.hud.showWord(nil, next: "", locator: nil) }
                 }
             case "--macdictation-test":
                 // Starts Mac dictation in Earshot's own test window for 3 s and logs how fast it listened.
@@ -551,6 +559,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
                         Log.write("mickey-test: after 4 s — dictation on: \(MacDictation.menuItem(starting: false) != nil), mic open: \(MacDictation.dictationHearing())")
                         window.close()
+                    }
+                }
+            case "--locate-own":
+                // Repeated words + reading that starts above the tapped paragraph, in Earshot's own window.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    let paras = ["The cat sat on the mat and the dog sat on the rug in the hall.",
+                                 "Then the dog ran to the door and the cat ran to the window of the hall.",
+                                 "In the end the cat and the dog both sat by the fire in the hall."]
+                    let full = paras.joined(separator: "\n")
+                    let window = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 360, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
+                    let tv = NSTextView(frame: NSRect(x: 10, y: 10, width: 340, height: 180))
+                    tv.string = full
+                    window.contentView?.addSubview(tv)
+                    window.orderFrontRegardless()
+                    let root = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
+                    let start = (full as NSString).range(of: paras[1]).location  // tapped paragraph 2
+                    let spoken = paras[0] + " " + paras[1]                         // reach: one paragraph above
+                    DispatchQueue.global().async {
+                        func find(_ e: AXUIElement) -> AXUIElement? {
+                            var r: CFTypeRef?; AXUIElementCopyAttributeValue(e, kAXRoleAttribute as CFString, &r)
+                            if (r as? String) == "AXTextArea" { return e }
+                            var k: CFTypeRef?; AXUIElementCopyAttributeValue(e, kAXChildrenAttribute as CFString, &k)
+                            for c in k as? [AXUIElement] ?? [] { if let f = find(c) { return f } }
+                            return nil
+                        }
+                        guard let el = find(root) else { Log.write("locate-own: no text view"); return }
+                        let loc = self.grabber.textViewLocator(el, text: full, start: start)
+                        let words = SpokenWord.grouped(SpokenWord.estimated(for: spoken, duration: 10))
+                        var lastY = -1.0, lastX = -1.0, wrong = 0
+                        for w in words {
+                            let ns = spoken as NSString
+                            let phrase = ns.substring(with: w.range)
+                            let box = loc.locate(phrase, next: String(ns.substring(from: NSMaxRange(w.range)).prefix(60)))
+                            if let b = box, (b.minY < lastY - 1 || (abs(b.minY - lastY) < 1 && b.minX < lastX)) { wrong += 1 }
+                            if let b = box { lastY = b.minY; lastX = b.minX }
+                            Log.write("locate-own: \(phrase) → \(box.map { "\(Int($0.minX)),\(Int($0.minY))" } ?? "nil") at \(loc.lastRange.map { "\($0.location)" } ?? "-")")
+                            loc.lastRange = nil
+                        }
+                        Log.write("locate-own: \(words.count) words, \(wrong) out of order")
+                        DispatchQueue.main.async { window.close() }
                     }
                 }
             case "--settings":

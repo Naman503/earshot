@@ -12,7 +12,7 @@ final class HUD {
     private let marker = WordMarker()
     private let finder = DispatchQueue(label: "earshot.words", qos: .userInteractive)
     private var busy = false
-    private var pending: (String, WordLocator)?
+    private var pending: (String, String, WordLocator)?
     private var missedSince: Date?
 
     init(reader: Reader, settings: Settings) {
@@ -53,21 +53,21 @@ final class HUD {
 
     /// Moves the marker to `word` on the page. Lookups run one at a time off
     /// the main thread; if the page is slow, words in between are skipped.
-    func showWord(_ word: String?, locator: WordLocator?) {
+    func showWord(_ word: String?, next: String, locator: WordLocator?) {
         guard let word, let locator, settings.highlightWords else {
             if word == nil || locator == nil { hideWord() }
             return
         }
-        pending = (word, locator)
+        pending = (word, next, locator)
         findNext()
     }
 
     private func findNext() {
-        guard !busy, let (word, locator) = pending else { return }
+        guard !busy, let (word, next, locator) = pending else { return }
         pending = nil
         busy = true
         finder.async {
-            let box = locator.locate(word)
+            let box = locator.locate(word, next: next)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     self.busy = false

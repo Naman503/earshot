@@ -195,7 +195,31 @@ final class AudioOutput: ObservableObject {
     }
 
     /// How long after the player renders a sample it is heard (Bluetooth adds a lot).
-    var outputLatency: Double { engine.outputNode.presentationLatency }
+    /// Measured once per device (Core Audio's own figures for the device,
+    /// its stream and buffer), or the engine's estimate if that's larger.
+    var outputLatency: Double {
+        if latencyDevice != currentDevice {
+            latencyDevice = currentDevice
+            deviceLatency = Self.deviceLatency(currentDevice)
+            Log.write("audio: output delay \(Int(max(deviceLatency, engine.outputNode.presentationLatency) * 1000)) ms")
+        }
+        return max(deviceLatency, engine.outputNode.presentationLatency)
+    }
+    private var latencyDevice: AudioDeviceID = 0
+    private var deviceLatency = 0.0
+
+    private static func deviceLatency(_ id: AudioDeviceID) -> Double {
+        guard id != 0 else { return 0 }
+        let out = kAudioObjectPropertyScopeOutput
+        let rate: Double = CoreAudioQuery.get(id, kAudioDevicePropertyNominalSampleRate, 0.0) ?? 0
+        guard rate > 0 else { return 0 }
+        let device: UInt32 = CoreAudioQuery.get(id, kAudioDevicePropertyLatency, scope: out, 0) ?? 0
+        let safety: UInt32 = CoreAudioQuery.get(id, kAudioDevicePropertySafetyOffset, scope: out, 0) ?? 0
+        let buffer: UInt32 = CoreAudioQuery.get(id, kAudioDevicePropertyBufferFrameSize, scope: out, 0) ?? 0
+        let streams = CoreAudioQuery.array(id, kAudioDevicePropertyStreams, scope: out, of: AudioStreamID.self)
+        let stream: UInt32 = streams.first.flatMap { CoreAudioQuery.get($0, kAudioStreamPropertyLatency, 0) } ?? 0
+        return Double(device + safety + buffer + stream) / rate
+    }
 
     func shutdown() {
         player.stop()

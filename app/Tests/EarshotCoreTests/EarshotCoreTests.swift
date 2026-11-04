@@ -186,3 +186,43 @@ final class AutoReadTests: XCTestCase {
         XCTAssertTrue(AutoReadRule(pattern: "app:WhatsApp", enabled: true, newContent: true, newPage: .nothing).matches(host: nil, app: "whatsapp"))
     }
 }
+
+final class TechnicalTextTests: XCTestCase {
+    func testCommandsCodeAndToolRowsAreTechnical() {
+        for line in [
+            "grep -n \"dictation\" ~/Library/Logs/Earshot/earshot.log | tail -25",
+            "$ npm install",
+            "git commit -m \"Fix highlight\"",
+            "Ran 3 commands",
+            "Read TextGrabber.swift",
+            "Edited Sources/Earshot/Reader.swift",
+            "let words = SpokenWord.grouped(result.words)",
+            "{\"type\": \"audio\", \"id\": 7}",
+            "/Users/naman/Device/earshot/app/Sources/Earshot/HUD.swift",
+            "if (x == 1 && y != 2) {",
+        ] {
+            XCTAssertTrue(TextPrep.isTechnical(line), line)
+        }
+    }
+
+    func testProseIsNotTechnical() {
+        for line in [
+            "Read it again when you have a moment.",
+            "The fix: Earshot now checks whether the microphone is open.",
+            "Run the install script once, then restart the app.",
+            "I found the cause: the highlight jumped to a later copy of the word.",
+            "Use ⌃⌥D to start dictation, or the 🎤 key.",
+            "Find the line starting with linux. Near the end you'll see ro.",
+        ] {
+            XCTAssertFalse(TextPrep.isTechnical(line), line)
+        }
+    }
+
+    func testPiecesHandleTechnicalLines() {
+        let text = "Here is the fix.\ngit add -A\ngit commit -m \"x\"\nThat's all."
+        XCTAssertEqual(TextPrep.pieces(text, technical: .skip).map(\.text), ["Here is the fix.", "Code.", "That's all."])
+        let fast = TextPrep.pieces(text, technical: .fast)
+        XCTAssertEqual(fast.map(\.technical), [false, true, true, false])
+        XCTAssertEqual(TextPrep.speakableCode("cat /Users/naman/app/Sources/Earshot/HUD.swift"), "cat HUD.swift")
+    }
+}

@@ -104,9 +104,13 @@ final class KokoroEngine: ObservableObject {
             Task { @MainActor in self?.receive(data) }
         }
         errPipe.fileHandleForReading.readabilityHandler = { h in
-            if let s = String(data: h.availableData, encoding: .utf8), !s.isEmpty {
-                Log.write("engine stderr: \(s.trimmingCharacters(in: .whitespacesAndNewlines).suffix(400))")
+            guard let s = String(data: h.availableData, encoding: .utf8) else { return }
+            // Known, harmless library chatter stays out of the log.
+            let lines = s.split(separator: "\n").filter { line in
+                !line.contains("words count mismatch") && !line.contains("torch.jit.script") && !line.contains("warnings.warn")
+                    && !line.contains("Creating new KokoroPipeline") && !line.trimmingCharacters(in: .whitespaces).isEmpty
             }
+            if !lines.isEmpty { Log.write("engine stderr: \(lines.joined(separator: "\n").suffix(400))") }
         }
         p.terminationHandler = { [weak self] proc in
             Task { @MainActor in self?.terminated(code: proc.terminationStatus) }

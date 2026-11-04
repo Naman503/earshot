@@ -20,7 +20,7 @@ final class Reader: ObservableObject {
     /// The word being spoken now, as a range in `currentText` (nil between words).
     @Published private(set) var spokenRange: NSRange?
     /// Called when the spoken word changes: its text and where to look for it.
-    var onWord: ((String?, WordLocator?) -> Void)?
+    var onWord: ((String?, String, WordLocator?) -> Void)?
 
     private let settings: Settings
     private let audio: AudioOutput
@@ -60,6 +60,8 @@ final class Reader: ObservableObject {
     /// Runs when this reading is cut short (Esc, a new tap, headphones gone).
     private var onInterrupt: (() -> Void)?
     private let lookahead = 4
+    /// Which chunks are code / commands, read at the fast speed.
+    private var technical: [Bool] = []
     /// Word timings per chunk, in seconds from the start of its buffer.
     private var timings: [Int: [SpokenWord]] = [:]
     /// Where each scheduled chunk starts in the player's timeline (frames since play).
@@ -86,6 +88,7 @@ final class Reader: ObservableObject {
         var chunks: [String]
         var index: Int
         var paused: Bool
+        var technical: [Bool] = []
     }
 
     /// Reads `raw` aloud. `quiet` skips the on-screen "connect headphones"
@@ -94,7 +97,8 @@ final class Reader: ObservableObject {
     func read(_ raw: String, source: String, quiet: Bool = false, locator: WordLocator? = nil,
               onFinish: (() -> Void)? = nil, onInterrupt: (() -> Void)? = nil) -> Bool {
         let text = TextPrep.apply(settings.pronunciations, to: TextPrep.clean(raw, options: settings.textOptions))
-        let mapped = TextPrep.chunksWithParagraphs(text)
+        let mapped = TextPrep.pieces(text, technical: settings.technicalText)
+        technical = mapped.map(\.technical)
         let parts = mapped.map(\.text)
         guard !parts.isEmpty else {
             if !quiet { flash("Nothing to read here") }
@@ -119,10 +123,11 @@ final class Reader: ObservableObject {
     /// Captures the current reading so it can be resumed after an interruption.
     func snapshot() -> Snapshot? {
         guard isActive, !chunks.isEmpty else { return nil }
-        return Snapshot(chunks: chunks, index: index, paused: state == .paused)
+        return Snapshot(chunks: chunks, index: index, paused: state == .paused, technical: technical)
     }
 
     func restore(_ s: Snapshot) {
+        technical = s.technical
         guard start(s.chunks, at: s.index, quiet: true, onFinish: nil) else { return }
         if s.paused { togglePause() }
     }
@@ -334,7 +339,12 @@ final class Reader: ObservableObject {
     private func synthesize(_ i: Int) {
         let id = readID
         let text = chunks[i]
-        let stretch = bakedSpeed
+        // Technical chunks are generated faster still; the player rate stays the
+        // same, so `bakedFor` records the normal speed they stand in for.
+        let fast = i < technical.count && technical[i] && chunks.count == technical.count
+        let factor = fast ? max(settings.technicalSpeed / bakedSpeed, 1) : 1
+        let normal = bakedSpeed
+        let stretch = bakedSpeed * factor
         let kokoroSession = usesKokoro
         let leadIn = i == leadInIndex ? 0.3 : 0
         Task {
@@ -350,7 +360,7 @@ final class Reader: ObservableObject {
                 let duration = Double(buffer.frameLength) / buffer.format.sampleRate
                 let words = result.words.isEmpty ? SpokenWord.estimated(for: text, duration: duration - shift) : result.words
                 timings[i] = SpokenWord.grouped(words.map { SpokenWord(range: $0.range, start: $0.start + shift, end: $0.end + shift) })
-                bakedFor[i] = kokoroSession ? stretch : 1
+                bakedFor[i] = kokoroSession ? normal : 1
             } else {
                 failed.insert(i)
                 Log.write("read: chunk \(i) produced no audio")
@@ -469,14 +479,23 @@ final class Reader: ObservableObject {
         spoken = s
         guard let s, let w = timings[s.chunk]?[s.word], s.chunk < chunks.count else {
             if spokenRange != nil { spokenRange = nil }
-            onWord?(nil, locator)
+            onWord?(nil, "", locator)
             return
         }
         let text = chunks[s.chunk] as NSString
         guard NSMaxRange(w.range) <= text.length else { return }
         // Only redraw the bar per word when it shows the word.
         if settings.highlightWordsInBar { spokenRange = s.chunk == position - 1 ? w.range : nil }
-        if locator != nil, settings.highlightWords { onWord?(text.substring(with: w.range), locator) }
+        // Code read fast is shortened, so it can't be followed on the page.
+        let isTechnical = s.chunk < technical.count && technical[s.chunk]
+        if locator != nil, settings.highlightWords {
+            if isTechnical {
+                onWord?(nil, "", locator)
+            } else {
+                let rest = text.substring(from: NSMaxRange(w.range))
+                onWord?(text.substring(with: w.range), String(rest.prefix(60)), locator)
+            }
+        }
     }
 
     // MARK: Headphones
