@@ -318,7 +318,7 @@ extension TextPrep {
     /// ("session-board reloaded (8 hooks: …)").
     public static func isChangeSummary(_ line: String) -> Bool {
         let t = line.trimmingCharacters(in: .whitespaces)
-        return t.range(of: #"^(Changed|Created|Edited|Deleted) \d+ files?$|\d+ additions?, \d+ deletions?$|\d+ added, \d+ removed$|^See all\b|reloaded \(\d+ hooks?\b"#,
+        return t.range(of: #"^(Changed|Created|Edited|Deleted) \d+ files?$|\d+ additions?, \d+ deletions?$|\d+ added, \d+ removed$|^See all\b|^reloaded \(\d+ hooks?\b"#,
                        options: .regularExpression) != nil
     }
 

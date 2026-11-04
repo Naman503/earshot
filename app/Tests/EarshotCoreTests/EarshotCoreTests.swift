@@ -302,3 +302,16 @@ final class ModNoticeTests: XCTestCase {
         XCTAssertEqual(TextPrep.pieces(text, technical: .fast).map(\.text), ["Tests pass.", "The same-file check is now silent."])
     }
 }
+
+final class ProseAboutNoticesTests: XCTestCase {
+    /// Sentences that quote a notice or a change card are prose and must be read.
+    func testLinesQuotingNoticesAreKept() {
+        let lines = [
+            "Claude Code’s file-change summary (“Changed 3 files”, “145 additions, 212 deletions”, “See all”)",
+            "mod notices like “session-board reloaded (8 hooks: …)”",
+            "File names inside sentences are now read with proper spacing (“edited ci-runner.py”, not “editedci-runner.py145”).",
+        ]
+        XCTAssertEqual(TextPrep.pieces(lines.joined(separator: "\n"), technical: .fast).filter { !$0.technical }.count >= 3, true)
+        for l in lines { XCTAssertFalse(TextPrep.isChangeSummary(l), l) }
+    }
+}
