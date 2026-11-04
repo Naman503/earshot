@@ -1,7 +1,8 @@
 """Earshot speech engine: a resident Kokoro (MLX) process driven over stdio.
 
 Protocol (one JSON object per line on stdin):
-  {"op": "synth", "id": 7, "text": "...", "voice": "af_heart", "speed": 1.0, "stretch": 2.0}
+  {"op": "synth", "id": 7, "text": "...", "voice": "af_heart", "speed": 1.0, "stretch": 2.0, "also": [3.0, 1.5]}
+      also = extra speeds made from the same voice pass (for instant speed switches)
       speed = Kokoro's own pace; stretch = WSOLA time-compression on top. Measured with
       Whisper, natural pace + WSOLA is far clearer at 2-3x than asking Kokoro to rush.
   {"op": "cancel_before", "id": 7}   drop queued requests with a smaller id
@@ -12,6 +13,7 @@ Every reply on stdout is a JSON header line, optionally followed by exactly
 `bytes` bytes of mono float32 little-endian PCM at `sr` Hz:
   {"type": "audio", "id": 7, "sr": 24000, "bytes": 123456, "words": [[0, 5, 0.11, 0.24], ...]}
       words = [UTF-16 offset, UTF-16 length, start s, end s] of each spoken word
+      parts = one entry per speed, {"stretch", "bytes", "words"}; the body is their audio in order
   {"type": "error", "id": 7, "message": "..."}
   {"type": "voices", "voices": ["af_heart", ...]}
   {"type": "ready"} / {"type": "pong"}
@@ -152,11 +154,17 @@ def main():
                 words.extend(word_times(r.tokens, offset))
                 chunks.append(a)
                 offset += a.size / SAMPLE_RATE
-            audio = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
-            audio = time_stretch(audio, stretch)
-            data = audio.astype("<f4").tobytes()
-            spans = align_words(msg["text"], words, stretch)
-            send({"type": "audio", "id": msg["id"], "sr": SAMPLE_RATE, "bytes": len(data), "words": spans}, data)
+            natural = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
+            # The voice is generated once at its natural pace; each speed is only
+            # a time-compression of it, so extra speeds cost little.
+            parts, blobs = [], []
+            for st in [stretch] + [float(x) for x in msg.get("also", []) if abs(float(x) - stretch) > 0.01]:
+                data = time_stretch(natural, st).astype("<f4").tobytes()
+                parts.append({"stretch": st, "bytes": len(data), "words": align_words(msg["text"], words, st)})
+                blobs.append(data)
+            body = b"".join(blobs)
+            send({"type": "audio", "id": msg["id"], "sr": SAMPLE_RATE, "bytes": len(body),
+                  "words": parts[0]["words"], "parts": parts}, body)
         except Exception as exc:  # keep serving after a bad request
             traceback.print_exc()
             send({"type": "error", "id": msg["id"], "message": str(exc)})

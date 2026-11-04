@@ -7,6 +7,8 @@ struct SpeechAudio {
     var sampleRate: Double
     /// When each word is spoken (empty if the engine doesn't say).
     var words: [SpokenWord] = []
+    /// The same speech at other speeds, by speed factor (for instant switches).
+    var alternates: [Double: SpeechAudio] = [:]
 }
 
 /// A word (or a short word plus the next one) and when it's spoken, in seconds
@@ -143,14 +145,15 @@ final class KokoroEngine: ObservableObject {
     }
 
     /// Asks for audio; the returned id can be cancelled.
-    func synthesize(_ text: String, voice: String, speed: Double = 1, stretch: Double = 1) -> (id: Int, result: Task<SpeechAudio?, Never>) {
+    func synthesize(_ text: String, voice: String, speed: Double = 1, stretch: Double = 1,
+                    also: [Double] = []) -> (id: Int, result: Task<SpeechAudio?, Never>) {
         let id = nextID
         nextID += 1
         let task = Task { @MainActor [weak self] () -> SpeechAudio? in
             guard let self, self.status == .ready, id >= self.floor else { return nil }
             return await withCheckedContinuation { c in
                 self.waiting[id] = c
-                self.send(["op": "synth", "id": id, "text": text, "voice": voice, "speed": speed, "stretch": stretch])
+                self.send(["op": "synth", "id": id, "text": text, "voice": voice, "speed": speed, "stretch": stretch, "also": also])
             }
         }
         return (id, task)
@@ -202,11 +205,29 @@ final class KokoroEngine: ObservableObject {
             voices = h["voices"] as? [String] ?? []
         case "audio":
             guard let id = h["id"] as? Int, let c = waiting.removeValue(forKey: id) else { return }
-            let samples = body.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
-            let words = (h["words"] as? [[Double]] ?? []).compactMap { w -> SpokenWord? in
-                w.count == 4 ? SpokenWord(range: NSRange(location: Int(w[0]), length: Int(w[1])), start: w[2], end: w[3]) : nil
+            let rate = h["sr"] as? Double ?? 24000
+            func words(_ raw: Any?) -> [SpokenWord] {
+                (raw as? [[Double]] ?? []).compactMap { w in
+                    w.count == 4 ? SpokenWord(range: NSRange(location: Int(w[0]), length: Int(w[1])), start: w[2], end: w[3]) : nil
+                }
             }
-            c.resume(returning: SpeechAudio(samples: samples, sampleRate: h["sr"] as? Double ?? 24000, words: words))
+            // One part per speed, their audio back to back in the body.
+            var parts: [(Double, SpeechAudio)] = []
+            var offset = 0
+            for p in h["parts"] as? [[String: Any]] ?? [] {
+                let n = p["bytes"] as? Int ?? 0
+                guard offset + n <= body.count else { break }
+                let samples = body.subdata(in: offset..<offset + n).withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+                parts.append((p["stretch"] as? Double ?? 1, SpeechAudio(samples: samples, sampleRate: rate, words: words(p["words"]))))
+                offset += n
+            }
+            guard var main = parts.first?.1 else {
+                let samples = body.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+                c.resume(returning: SpeechAudio(samples: samples, sampleRate: rate, words: words(h["words"])))
+                return
+            }
+            for (stretch, audio) in parts.dropFirst() { main.alternates[stretch] = audio }
+            c.resume(returning: main)
         case "error":
             Log.write("engine error: \(h["message"] ?? "")")
             if let id = h["id"] as? Int {

@@ -67,6 +67,10 @@ final class Reader: ObservableObject {
     /// Runs when this reading is cut short (Esc, a new tap, headphones gone).
     private var onInterrupt: (() -> Void)?
     private let lookahead = 4
+    /// Each chunk made at every speed mode (normal / boost / slow), so a
+    /// switch between them is an instant cut, not a wait for new audio.
+    private struct Version { let buffer: AVAudioPCMBuffer; let words: [SpokenWord]; let timings: [SpokenWord] }
+    private var versions: [Int: [SpeedMode: Version]] = [:]
     /// Which chunks are code / commands, read at the fast speed.
     private var technical: [Bool] = []
     /// When the untouched audio runs out after a speed change (for the log).
@@ -200,6 +204,7 @@ final class Reader: ObservableObject {
         wordTimer?.invalidate()
         wordTimer = nil
         chunks = []
+        versions = [:]
         cache = [:]
         failed = []
         requested = []
@@ -290,7 +295,100 @@ final class Reader: ObservableObject {
         if !quiet {
             flash(String(format: mode == .boost ? "Boost %.2g×" : mode == .slow ? "Slow %.2g×" : "Normal speed %.2g×", speed))
         }
-        speedChanged()
+        if !switchInstantly() { speedChanged() }
+    }
+
+    /// Switches to the ready-made audio of the new speed mode at the next gap
+    /// between words: the current audio fades out over a few milliseconds in
+    /// that gap and the other version fades in at the same word. Nothing is
+    /// made, so there's no wait, no gap and no repeated word. Returns false
+    /// when the other version isn't there (then `speedChanged` re-voices).
+    private func switchInstantly() -> Bool {
+        guard usesKokoro, isActive, let playing = scheduled.first, let old = cache[playing],
+              let new = versions[playing]?[speedMode], let frames = chunkFrames[playing],
+              let node = audio.player.lastRenderTime, let t = audio.player.playerTime(forNodeTime: node) else { return false }
+        let oldWords = versions[playing]?.values.first { $0.buffer === old }?.words ?? []
+        guard !oldWords.isEmpty, oldWords.count == new.words.count else { return false }
+        let rate = old.format.sampleRate
+        let at = max(0, min(t.sampleTime - frames.start, AVAudioFramePosition(old.frameLength)))
+        let now = Double(at) / rate
+        // A word far enough ahead to schedule the cut cleanly.
+        let k = oldWords.firstIndex { $0.start >= now + 0.08 }
+        func gapMiddle(_ w: [SpokenWord], _ k: Int) -> Double {
+            k > 0 ? (w[k - 1].end + w[k].start) / 2 : max(0, w[k].start - 0.03)
+        }
+        let cutOld = k.map { AVAudioFramePosition(gapMiddle(oldWords, $0) * rate) } ?? AVAudioFramePosition(old.frameLength)
+        let cutNew = k.map { AVAudioFramePosition(gapMiddle(new.words, $0) * rate) } ?? 0
+        guard cutOld > at else { return false }
+
+        bakedSpeed = speed
+        readID += 1  // results for the old speed are no longer wanted
+        kokoro.cancelPending()
+        playToken += 1
+        let token = playToken
+        audio.player.stop()
+        chunkFrames = [:]
+        scheduled = []
+        // 1. The rest of what you're hearing, to the gap, fading out at the very end.
+        let head = slice(old, from: at, to: cutOld, fadeIn: false, fadeOut: k != nil)
+        var cursor: AVAudioFramePosition = 0
+        if let head {
+            if k == nil {
+                // No word left: this sentence plays out at its speed; switch from the next.
+                audio.player.scheduleBuffer(head, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+                    DispatchQueue.main.async { MainActor.assumeIsolated { self?.finished(playing, token: token) } }
+                }
+                scheduled = [playing]
+                chunkFrames[playing] = (-at, AVAudioFramePosition(old.frameLength))
+            } else {
+                audio.player.scheduleBuffer(head)
+            }
+            cursor = AVAudioFramePosition(head.frameLength)
+        }
+        // 2. The new speed from that same word.
+        if k != nil, let tail = slice(new.buffer, from: cutNew, to: AVAudioFramePosition(new.buffer.frameLength), fadeIn: true, fadeOut: false) {
+            audio.player.scheduleBuffer(tail, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+                DispatchQueue.main.async { MainActor.assumeIsolated { self?.finished(playing, token: token) } }
+            }
+            scheduled = [playing]
+            // Positions in the new version line up with what's heard, for the highlight.
+            chunkFrames[playing] = (cursor - cutNew, AVAudioFramePosition(new.buffer.frameLength))
+            cache[playing] = new.buffer
+            timings[playing] = new.timings
+            cursor += AVAudioFramePosition(tail.frameLength)
+        }
+        scheduledFrames = cursor
+        // 3. Everything after: the ready-made versions, or made again.
+        for (i, byMode) in versions where i > playing {
+            if let v = byMode[speedMode] { cache[i] = v.buffer; timings[i] = v.timings; bakedFor[i] = speed }
+            else { cache[i] = nil; requested.remove(i) }
+        }
+        for i in cache.keys where i > playing && versions[i] == nil { cache[i] = nil; requested.remove(i) }
+        bakedFor[playing] = speed
+        index = playing
+        if state != .paused { audio.player.play() }
+        applyAudioSettings()
+        scheduleReady()
+        fill()
+        Log.write("speed switch: instant, at \(k.map { "word \($0)" } ?? "sentence end")")
+        return true
+    }
+
+    /// A copy of `buffer` from `from` to `to`, with 6 ms fades where asked.
+    private func slice(_ buffer: AVAudioPCMBuffer, from: AVAudioFramePosition, to: AVAudioFramePosition,
+                       fadeIn: Bool, fadeOut: Bool) -> AVAudioPCMBuffer? {
+        let n = Int(to - from)
+        guard n > 0, let out = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: AVAudioFrameCount(n)),
+              let src = buffer.floatChannelData, let dst = out.floatChannelData else { return nil }
+        out.frameLength = AVAudioFrameCount(n)
+        dst[0].update(from: src[0] + Int(from), count: n)
+        let fade = min(n / 2, Int(buffer.format.sampleRate * 0.006))
+        for j in 0..<fade {
+            let g = Float(j) / Float(fade)
+            if fadeIn { dst[0][j] *= g }
+            if fadeOut { dst[0][n - 1 - j] *= g }
+        }
+        return out
     }
 
     /// Applies volume, and speed on the player at once (or gliding, with
@@ -313,6 +411,7 @@ final class Reader: ObservableObject {
             return
         }
         bakedSpeed = speed
+        versions = [:]  // the speed values changed: ready-made versions are stale
         readID += 1
         kokoro.cancelPending()
         failed = []
@@ -421,25 +520,43 @@ final class Reader: ObservableObject {
         // Technical chunks are generated faster still; the player rate stays the
         // same, so `bakedFor` records the normal speed they stand in for.
         let fast = i < technical.count && technical[i] && chunks.count == technical.count
-        let factor = fast ? max(settings.technicalSpeed / bakedSpeed, 1) : 1
+        func stretch(_ speed: Double) -> Double { speed * (fast ? max(settings.technicalSpeed / speed, 1) : 1) }
         let normal = bakedSpeed
-        let stretch = bakedSpeed * factor
+        let primary = stretch(bakedSpeed)
+        // The other speed modes, made from the same voice pass for instant switches.
+        let modeSpeeds: [SpeedMode: Double] = [.normal: stretch(settings.speed), .boost: stretch(settings.boostSpeed), .slow: stretch(settings.slowSpeed)]
+        let also = Array(Set(modeSpeeds.values.filter { abs($0 - primary) > 0.01 }))
         let kokoroSession = usesKokoro
         let leadIn = i == leadInIndex ? 0.3 : 0
         Task {
             let result: SpeechAudio?
             if kokoroSession {
-                result = await kokoro.synthesize(text, voice: settings.voice, stretch: stretch).result.value
+                result = await kokoro.synthesize(text, voice: settings.voice, stretch: primary, also: also).result.value
             } else {
                 result = await apple.synthesize(text, voiceID: settings.appleVoiceID, speed: 1)
             }
             guard id == readID else { return }
-            if let result, let (buffer, shift) = audio.buffer(for: result, leadIn: leadIn) {
-                cache[i] = buffer
+            @MainActor func version(_ a: SpeechAudio) -> Version? {
+                guard let (buffer, shift) = audio.buffer(for: a, leadIn: leadIn) else { return nil }
                 let duration = Double(buffer.frameLength) / buffer.format.sampleRate
-                let words = result.words.isEmpty ? SpokenWord.estimated(for: text, duration: duration - shift) : result.words
-                timings[i] = SpokenWord.grouped(words.map { SpokenWord(range: $0.range, start: $0.start + shift, end: $0.end + shift) })
-                bakedFor[i] = kokoroSession ? normal : 1
+                let raw = a.words.isEmpty ? SpokenWord.estimated(for: text, duration: duration - shift) : a.words
+                let words = raw.map { SpokenWord(range: $0.range, start: $0.start + shift, end: $0.end + shift) }
+                return Version(buffer: buffer, words: words, timings: SpokenWord.grouped(words))
+            }
+            if let result, let main = version(result) {
+                if kokoroSession {
+                    var byMode: [SpeedMode: Version] = [:]
+                    for (mode, sp) in modeSpeeds {
+                        if abs(sp - primary) < 0.01 { byMode[mode] = main }
+                        else if let alt = result.alternates.first(where: { abs($0.key - sp) < 0.01 })?.value { byMode[mode] = version(alt) }
+                    }
+                    versions[i] = byMode
+                }
+                // The speed mode may have changed while this was being made.
+                let use = (kokoroSession ? versions[i]?[speedMode] : nil) ?? main
+                cache[i] = use.buffer
+                timings[i] = use.timings
+                bakedFor[i] = kokoroSession ? (versions[i]?[speedMode] != nil ? speed : normal) : 1
             } else {
                 failed.insert(i)
                 Log.write("read: chunk \(i) produced no audio")
@@ -484,6 +601,7 @@ final class Reader: ObservableObject {
         guard token == playToken, scheduled.first == i else { return }
         scheduled.removeFirst()
         cache[i] = nil
+        versions[i] = nil
         index = i + 1
         if index >= chunks.count {
             finishNaturally()

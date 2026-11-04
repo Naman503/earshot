@@ -99,6 +99,7 @@ final class HUD {
 
     private func place(_ rect: CGRect) {
         missedSince = nil
+        marker.tint(for: reader.speedMode)
         marker.show(rect)
     }
 
@@ -253,6 +254,23 @@ final class WordMarker {
         }
         lastRect = rect
     }
+
+    /// Accent colour at normal speed, orange while fast, teal while slow.
+    func tint(for mode: Reader.SpeedMode) {
+        let color: NSColor = switch mode {
+        case .normal: .controlAccentColor
+        case .boost: .systemOrange
+        case .slow: .systemTeal
+        }
+        guard color != tintColor else { return }
+        tintColor = color
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.25)
+        fill.backgroundColor = color.withAlphaComponent(0.22).cgColor
+        underline.backgroundColor = color.withAlphaComponent(0.95).cgColor
+        CATransaction.commit()
+    }
+    private var tintColor: NSColor?
 
     func hide() {
         guard visible else { return }
