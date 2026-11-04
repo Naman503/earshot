@@ -105,9 +105,13 @@ def main():
     model_path = snapshot_download(MODEL_ID)
     # Keep the voice in RAM: when the Mac is short of memory, macOS otherwise
     # moves the model to disk and each sentence waits seconds to read it back.
+    import mlx.core as mx
     try:
-        import mlx.core as mx
         mx.set_wired_limit(int(1.5 * 1024 ** 3))
+        # MLX keeps freed GPU buffers for reuse, up to ~12 GB by default. Every
+        # sentence has a different size, so that cache only grows — it took most
+        # of the Mac's memory. Keep it small; it's emptied after each sentence too.
+        mx.set_cache_limit(256 * 1024 ** 2)
     except Exception:
         traceback.print_exc()
     # Warm both English pipelines so the first real request is fast.
@@ -161,6 +165,7 @@ def main():
                 voice = msg.get("voice") or last_voice["v"]
                 for _ in model._get_pipeline(lang_for(voice))("Ready.", voice=voice, speed=1.0):
                     pass
+                mx.clear_cache()
             except Exception:
                 traceback.print_exc()
             continue
@@ -191,6 +196,7 @@ def main():
             body = b"".join(blobs)
             send({"type": "audio", "id": msg["id"], "sr": SAMPLE_RATE, "bytes": len(body),
                   "words": parts[0]["words"], "parts": parts}, body)
+            mx.clear_cache()
         except Exception as exc:  # keep serving after a bad request
             traceback.print_exc()
             send({"type": "error", "id": msg["id"], "message": str(exc)})
