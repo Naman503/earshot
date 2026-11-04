@@ -52,7 +52,8 @@ final class MacDictation {
         }
         AXUIElementPerformAction(item, kAXPressAction as CFString)
         Log.write("mac-dictation: started with ⌃⌥D in \(Self.frontName)")
-        watch(since: Date(), step: 0, sure: true)
+        expected = true
+        verify(true, since: Date(), step: 0)
     }
 
     private func stop() {
@@ -120,28 +121,38 @@ final class MacDictation {
         }
     }
 
-    /// A key that may start or stop dictation. Stopping is left entirely to
-    /// you: if dictation was on before the press, nothing is done. Starting is
-    /// made dependable: macOS often ignores the first press, so if a 🎤 / ⌃⌥D
-    /// press while it's off brings nothing up within ~1.2 s, it's started here.
+    /// A key that toggles dictation. macOS sometimes ignores a press — to
+    /// start or to stop — so nothing is assumed: the state before the press
+    /// is known, the real state is checked a moment later, and an ignored
+    /// press is completed (stopped or started). Another press while checking
+    /// simply flips what's expected, so it never fights you.
     private func dictationKey(_ which: String, sure: Bool) {
-        if isOn {
-            isOn = false
-            check?.invalidate()
-            checkID += 1
-            if sure { Log.write("mac-dictation: \(which) pressed — off") }
+        // Tracked state only: by now macOS may already have acted on the press.
+        let before = expected ?? isOn
+        guard sure else {
+            // Control twice / other keys: only notice if dictation came on.
+            if !before { observe() }
             return
         }
-        if sure { Log.write("mac-dictation: \(which) pressed in \(Self.frontName)") }
-        watch(since: Date(), step: 0, sure: sure)
+        let want = !before
+        expected = want
+        Log.write("mac-dictation: \(which) pressed in \(Self.frontName) — \(want ? "turning on" : "turning off")")
+        if want { getOutOfTheWay() }
+        verify(want, since: Date(), step: 0)
     }
+
+    /// The press's expected result while it's being checked.
+    private var expected: Bool?
 
     /// On means the dictation menu says so or its microphone is open.
     private static func dictationOn() -> Bool { dictationHearing() || menuItem(starting: false) != nil }
 
-    /// Waits for dictation to come on. If a sure press brought nothing, starts
-    /// it once; if it's on but the mic never opens, turns it off and on.
-    private func watch(since started: Date, step: Int, sure: Bool) {
+    /// Checks the press did what was expected, and finishes it if it didn't.
+    /// Turning on: waits for the microphone (a cold start takes ~1–2 s); if
+    /// nothing came on by 1.3 s it starts dictation; if it's on but the mic
+    /// stays closed, turns it off and on. Turning off: if it's still on after
+    /// 1 s, stops it.
+    private func verify(_ want: Bool, since started: Date, step: Int) {
         check?.invalidate()
         checkID += 1
         let id = checkID
@@ -150,30 +161,63 @@ final class MacDictation {
             MainActor.assumeIsolated {
                 guard let self, id == self.checkID else { t.invalidate(); return }
                 let elapsed = Date().timeIntervalSince(started)
-                if Self.dictationHearing() {
-                    t.invalidate()
-                    self.getOutOfTheWay()
-                    Log.write("mac-dictation: listening after \(Int(elapsed * 1000)) ms\(step > 0 ? " (fixed)" : "")")
-                    self.follow()
-                } else if Self.menuItem(starting: false) != nil {
-                    seenOn = true
-                    self.isOn = true
-                    if elapsed > (step == 0 ? 1.6 : 2.5) {
+                let hearing = Self.dictationHearing()
+                let menuOn = Self.menuItem(starting: false) != nil
+                if want {
+                    if hearing {
                         t.invalidate()
-                        self.recover(step: step)
+                        self.expected = nil
+                        Log.write("mac-dictation: listening after \(Int(elapsed * 1000)) ms\(step > 0 ? " (fixed)" : "")")
+                        self.follow()
+                    } else if menuOn {
+                        seenOn = true
+                        if elapsed > (step == 0 ? 1.6 : 2.5) {
+                            t.invalidate()
+                            self.recover(step: step)
+                        }
+                    } else if elapsed > 1.3 {
+                        t.invalidate()
+                        guard step == 0, !seenOn, let item = Self.menuItem(starting: true) else {
+                            self.expected = nil
+                            self.isOn = false
+                            Log.write("mac-dictation: didn't come on")
+                            return
+                        }
+                        Log.write("mac-dictation: the press was ignored — starting dictation")
+                        AXUIElementPerformAction(item, kAXPressAction as CFString)
+                        self.verify(true, since: Date(), step: 1)
                     }
-                } else if seenOn {
-                    t.invalidate()  // switched off again
-                    self.isOn = false
-                } else if elapsed > 1.2 {
-                    t.invalidate()
-                    guard sure, step == 0, let item = Self.menuItem(starting: true) else { return }
-                    // The press didn't start it (common on the first press): start it now.
-                    Log.write("mac-dictation: the press didn't start dictation — starting it")
-                    self.getOutOfTheWay()
-                    AXUIElementPerformAction(item, kAXPressAction as CFString)
-                    self.watch(since: Date(), step: 1, sure: true)
+                } else {
+                    if !hearing && !menuOn {
+                        t.invalidate()
+                        self.expected = nil
+                        self.isOn = false
+                        Log.write("mac-dictation: off")
+                    } else if elapsed > 1.0 {
+                        t.invalidate()
+                        self.expected = nil
+                        if let item = Self.menuItem(starting: false) {
+                            Log.write("mac-dictation: the press was ignored — stopping dictation")
+                            AXUIElementPerformAction(item, kAXPressAction as CFString)
+                        }
+                        self.isOn = false
+                    }
                 }
+            }
+        }
+    }
+
+    /// Dictation started by something else (Control twice): keep track of it.
+    private func observe() {
+        check?.invalidate()
+        checkID += 1
+        let id = checkID
+        let started = Date()
+        check = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] t in
+            MainActor.assumeIsolated {
+                guard let self, id == self.checkID else { t.invalidate(); return }
+                if Self.dictationOn() { t.invalidate(); self.follow() }
+                else if Date().timeIntervalSince(started) > 2 { t.invalidate() }
             }
         }
     }
@@ -209,7 +253,7 @@ final class MacDictation {
         DispatchQueue.main.asyncAfter(deadline: .now() + (step == 0 ? 0.35 : 0.8)) { [weak self] in
             guard let self, let item = Self.menuItem(starting: true) else { return }
             AXUIElementPerformAction(item, kAXPressAction as CFString)
-            self.watch(since: Date(), step: step + 1, sure: true)
+            self.verify(true, since: Date(), step: step + 1)
         }
     }
 

@@ -581,8 +581,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     func mic() {
                         for down in [true, false] { CGEvent(keyboardEventSource: nil, virtualKey: 176, keyDown: down)?.post(tap: .cghidEventTap) }
                     }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { Log.write("mickey-test: press 1"); mic() }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 4) { Log.write("mickey-test: press 2"); mic() }
+                    // Never press anything unless our own window is really in front.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier else {
+                            Log.write("mickey-test: Earshot isn't in front — not pressing anything")
+                            window.close()
+                            return
+                        }
+                        Log.write("mickey-test: press 1"); mic()
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+                        guard window.isVisible, NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier else { return }
+                        Log.write("mickey-test: press 2"); mic()
+                    }
                     DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
                         Log.write("mickey-test: after 4 s — dictation on: \(MacDictation.menuItem(starting: false) != nil), mic open: \(MacDictation.dictationHearing())")
                         window.close()
@@ -636,7 +647,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.settings.mediaPolicy = .keepPlaying
                     let text = String(repeating: "This sentence is here so the reader has plenty of speech to work with during the test. ", count: 12)
                     self.reader.read(text, source: "speed test", quiet: true)
-                    for (t, mode) in [(2.0, Reader.SpeedMode.slow), (6, .normal), (10, .boost), (14, .normal)] {
+                    for (t, mode) in [(2.0, Reader.SpeedMode.slow), (11, .normal), (13, .boost), (17, .normal)] {
                         DispatchQueue.main.asyncAfter(deadline: .now() + t) { self.reader.setSpeedMode(mode, quiet: true) }
                     }
                     for k in 1...36 {

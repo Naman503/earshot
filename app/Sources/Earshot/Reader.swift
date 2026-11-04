@@ -322,8 +322,8 @@ final class Reader: ObservableObject {
         guard cutOld > at else { return false }
 
         bakedSpeed = speed
-        readID += 1  // results for the old speed are no longer wanted
-        kokoro.cancelPending()
+        // Sentences still being made are kept: they come with every speed, and
+        // the version for the new mode is picked when they arrive.
         playToken += 1
         let token = playToken
         audio.player.stop()
@@ -370,7 +370,8 @@ final class Reader: ObservableObject {
         applyAudioSettings()
         scheduleReady()
         fill()
-        Log.write("speed switch: instant, at \(k.map { "word \($0)" } ?? "sentence end")")
+        let said = { (w: SpokenWord) in (self.chunks[playing] as NSString).substring(with: w.range) }
+        Log.write("speed switch: instant in chunk \(playing) at \(String(format: "%.2f", now)) s, \(k.map { "between “\($0 > 0 ? said(oldWords[$0 - 1]) : "")” and “\(said(oldWords[$0]))” (word \($0) of \(oldWords.count))" } ?? "at sentence end")")
         return true
     }
 
@@ -406,6 +407,7 @@ final class Reader: ObservableObject {
     /// word at the new speed meanwhile, and playback switches there. Everything
     /// queued after it is made again at the new speed.
     func speedChanged() {
+        if usesKokoro, isActive, abs(speed - bakedSpeed) > 0.01 { Log.write("speed switch: re-voicing (no ready-made version)") }
         guard usesKokoro, isActive, abs(speed - bakedSpeed) > 0.01 else {
             applyAudioSettings()
             return

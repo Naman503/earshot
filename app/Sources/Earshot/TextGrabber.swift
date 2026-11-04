@@ -22,6 +22,8 @@ struct Grab {
 protocol WordLocator: AnyObject, Sendable {
     /// `next`: the words spoken right after, to tell apart repeats of a word.
     func locate(_ phrase: String, next: String) -> CGRect?
+    /// Where the last word found is now (after the page scrolled or moved).
+    func remeasure() -> CGRect?
 }
 
 /// Letters and digits only, lowercased: "Earshot's," → "earshots".
@@ -952,6 +954,8 @@ final class TextRunLocator: WordLocator, @unchecked Sendable {
         return locate(phrase, next: next)
     }
     private var reloading = false
+
+    func remeasure() -> CGRect? { lastRange.flatMap { box(for: $0) } }
 
     /// Where `word` is on the page: the first place after the cursor that the
     /// following spoken words also come after, so a common word ("the") never

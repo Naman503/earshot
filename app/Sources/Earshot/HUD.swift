@@ -30,10 +30,11 @@ final class HUD {
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         panel.contentView = NSHostingView(rootView: HUDView(reader: reader, settings: settings))
-        // The page moves under the marker while you scroll or drag a window:
-        // hide it; the next word puts it back in the right place.
+        // While you scroll or drag a window, the marker stays on the word that
+        // was being read and moves with the page, so you can scroll back to it;
+        // reading carries on, and the marker catches up when you stop.
         scrollMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.scrollWheel, .leftMouseDragged]) { [weak self] _ in
-            MainActor.assumeIsolated { self?.marker.hide() }
+            MainActor.assumeIsolated { self?.pageMoved() }
         }
     }
 
@@ -66,11 +67,42 @@ final class HUD {
             return
         }
         pending = (word, next, locator)
-        findNext()
+        lastLocator = locator
+        if scrollEnd == nil { findNext() }
+    }
+
+    private var lastLocator: WordLocator?
+    /// Pending "you stopped scrolling" moment; non-nil while scrolling.
+    private var scrollEnd: DispatchWorkItem?
+    private var lastFollow = Date.distantPast
+
+    private func pageMoved() {
+        scrollEnd?.cancel()
+        let end = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.scrollEnd = nil
+            self.findNext()  // back to the word being spoken now
+        }
+        scrollEnd = end
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: end)
+        // Keep the marker on the last word read as the page moves (~30 times a second).
+        guard !busy, Date().timeIntervalSince(lastFollow) > 0.033, let locator = lastLocator else { return }
+        lastFollow = Date()
+        busy = true
+        finder.async {
+            let box = locator.remeasure()
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self.busy = false
+                    if let box { self.marker.show(box) }
+                    if self.scrollEnd == nil { self.findNext() }
+                }
+            }
+        }
     }
 
     private func findNext() {
-        guard !busy, let (word, next, locator) = pending else { return }
+        guard !busy, scrollEnd == nil, let (word, next, locator) = pending else { return }
         pending = nil
         busy = true
         finder.async {
@@ -93,6 +125,7 @@ final class HUD {
 
     private func hideWord() {
         pending = nil
+        lastLocator = nil
         missedSince = nil
         marker.hide()
     }
