@@ -17,7 +17,7 @@ public enum TextPrep {
         // treat them as breaks so menus don't run into the article.
         var s = text.replacingOccurrences(of: "\u{FFFC}", with: "\n")
         // Screen-reader labels chat apps put before each message.
-        s = s.replacingOccurrences(of: #"(?m)^\s*(Claude|ChatGPT|Gemini|Copilot|You) (responded|said|wrote):\s*"#, with: "", options: .regularExpression)
+        s = dropChatLabels(s)
         // Hidden keyboard hints chat apps give screen readers.
         s = s.replacingOccurrences(of: #"(?m)^\s*Use the up and down arrow keys to move between messages\.?\s*$"#, with: "", options: .regularExpression)
         s = speakableSymbols(s)
@@ -39,6 +39,23 @@ public enum TextPrep {
                 .trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
         return paragraphs.joined(separator: "\n")
+    }
+
+    /// Chat apps put a hidden heading before each message, "Claude responded:
+    /// <its first sentence>". When the message itself follows, the heading only
+    /// repeats it (the first sentence was read twice): drop it. Otherwise keep
+    /// its text without the label.
+    static func dropChatLabels(_ text: String) -> String {
+        let label = #"^\s*(Claude|ChatGPT|Gemini|Copilot|You) (responded|said|wrote):\s*"#
+        var lines = text.components(separatedBy: "\n")
+        for i in lines.indices {
+            guard let r = lines[i].range(of: label, options: .regularExpression) else { continue }
+            let rest = String(lines[i][r.upperBound...])
+            let next = lines[(i + 1)...].first { !$0.trimmingCharacters(in: .whitespaces).isEmpty }?.trimmingCharacters(in: .whitespaces) ?? ""
+            let probe = String(rest.prefix(30))
+            lines[i] = !probe.isEmpty && (next.hasPrefix(probe) || rest.hasPrefix(String(next.prefix(30))) && !next.isEmpty) ? "" : rest
+        }
+        return lines.joined(separator: "\n")
     }
 
     /// Key and arrow symbols the voice would say wrongly or not at all.

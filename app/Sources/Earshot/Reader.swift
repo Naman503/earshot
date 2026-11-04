@@ -113,6 +113,28 @@ final class Reader: ObservableObject {
     @discardableResult
     func read(_ raw: String, source: String, quiet: Bool = false, locator: WordLocator? = nil,
               onFinish: (() -> Void)? = nil, onInterrupt: (() -> Void)? = nil) -> Bool {
+        // The voice was put to sleep to save memory: wake it and wait (a few
+        // seconds) rather than switching to the Apple voice.
+        if settings.engine == .kokoro, kokoro.status == .asleep || kokoro.waking {
+            kokoro.wake()
+            if !quiet { hold("Waking the voice…") }
+            let deadline = Date().addingTimeInterval(15)
+            func retry() {
+                guard kokoro.status == .ready || Date() > deadline else {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { retry() }
+                    return
+                }
+                clearNotice()
+                _ = readNow(raw, source: source, quiet: quiet, locator: locator, onFinish: onFinish, onInterrupt: onInterrupt)
+            }
+            retry()
+            return true
+        }
+        return readNow(raw, source: source, quiet: quiet, locator: locator, onFinish: onFinish, onInterrupt: onInterrupt)
+    }
+
+    private func readNow(_ raw: String, source: String, quiet: Bool, locator: WordLocator?,
+                         onFinish: (() -> Void)?, onInterrupt: (() -> Void)?) -> Bool {
         let text = TextPrep.apply(settings.pronunciations, to: TextPrep.clean(raw, options: settings.textOptions))
         let mapped = TextPrep.pieces(text, technical: settings.technicalText)
         technical = mapped.map(\.technical)
@@ -122,6 +144,13 @@ final class Reader: ObservableObject {
             return false
         }
         Log.write("read: \(parts.count) chunks from \(source), \(text.count) chars")
+        // What exactly is being read, so a line that seems skipped can be checked:
+        // the full text, with technical lines (read fast) marked.
+        let marked = mapped.map { ($0.technical ? "[fast] " : "") + $0.text }.joined(separator: "\n")
+        try? marked.write(to: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Earshot/last-read.txt"),
+                          atomically: true, encoding: .utf8)
+        let fast = mapped.filter(\.technical).count
+        if fast > 0 { Log.write("read: \(fast) of \(mapped.count) pieces are code/commands, read fast") }
         readStartedAt = Date()
         let started = start(parts, at: 0, quiet: quiet, onFinish: onFinish)
         if started {

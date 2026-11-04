@@ -236,3 +236,10 @@ final class SymbolTests: XCTestCase {
         XCTAssertEqual(TextPrep.clean("• First point"), "First point")
     }
 }
+
+final class ChatLabelTests: XCTestCase {
+    func testHiddenHeadingIsNotReadTwice() {
+        XCTAssertEqual(TextPrep.clean("Claude responded: The watcher lost its connection.\nThe watcher lost its connection. Checking now."),
+                       "The watcher lost its connection. Checking now.")
+    }
+}

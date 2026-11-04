@@ -34,6 +34,9 @@ final class Settings: ObservableObject {
     @Published var highlightWords: Bool { didSet { save("highlightWords", highlightWords) } }
     /// Also light up the word in the now-reading bar (off: the page is enough).
     @Published var highlightWordsInBar: Bool { didSet { save("highlightWordsInBar", highlightWordsInBar) } }
+    /// Stop the voice engine (freeing ~0.8 GB) after this many idle minutes.
+    @Published var sleepVoiceWhenIdle: Bool { didSet { save("sleepVoiceWhenIdle", sleepVoiceWhenIdle) } }
+    @Published var sleepVoiceAfterMinutes: Int { didSet { save("sleepVoiceAfterMinutes", sleepVoiceAfterMinutes) } }
     /// Seconds to move the word highlight later (+) or earlier (−) than measured.
     @Published var highlightOffset: Double { didSet { save("highlightOffset", highlightOffset) } }
     /// Code, commands, paths and tool rows: read fast, skip, or read normally.
@@ -141,6 +144,8 @@ final class Settings: ObservableObject {
         highlightSource = d.object(forKey: "highlightSource") as? Bool ?? true
         highlightWords = d.object(forKey: "highlightWords") as? Bool ?? true
         highlightWordsInBar = d.object(forKey: "highlightWordsInBar") as? Bool ?? false
+        sleepVoiceWhenIdle = d.object(forKey: "sleepVoiceWhenIdle") as? Bool ?? false
+        sleepVoiceAfterMinutes = d.object(forKey: "sleepVoiceAfterMinutes") as? Int ?? 10
         highlightOffset = d.object(forKey: "highlightOffset") as? Double ?? 0
         technicalText = d.string(forKey: "technicalText").flatMap(TextPrep.TechnicalText.init) ?? .fast
         technicalSpeed = d.object(forKey: "technicalSpeed") as? Double ?? 4.0

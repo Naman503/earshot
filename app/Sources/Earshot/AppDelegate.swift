@@ -43,6 +43,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         Log.write("launch \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") ?? "") accessibility=\(AXIsProcessTrusted())")
         watchForStalls()
+        // Free the voice's memory after a while without reading, if chosen.
+        Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if self.reader.isActive { self.lastReading = Date(); return }
+                guard self.settings.sleepVoiceWhenIdle, self.kokoro.status == .ready,
+                      Date().timeIntervalSince(self.lastReading) > Double(self.settings.sleepVoiceAfterMinutes) * 60 else { return }
+                self.kokoro.sleep()
+            }
+        }
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(systemSymbolName: "headphones", accessibilityDescription: "Earshot")
@@ -133,6 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !AXIsProcessTrusted() { openSettings(tab: .general) }
     }
 
+    private var lastReading = Date()
     private let stallQueue = DispatchQueue(label: "earshot.stalls", qos: .utility)
     private var stallTimer: DispatchSourceTimer?
 
@@ -298,6 +309,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let status: String = switch kokoro.status {
         case .ready: "Kokoro voice ready"
         case .starting: "Kokoro starting… (Apple voice meanwhile)"
+        case .asleep: "Kokoro asleep (memory freed) — wakes when you read"
         case .notInstalled: "Kokoro not installed — using Apple voice"
         case .failed(let m): "Kokoro failed: \(m)"
         }
@@ -667,6 +679,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         }
                     }
                 }
+            case "--extract-test":
+                // A page with every awkward structure, in Earshot's own window: logs what
+                // "read from the first paragraph to the end" would read, line by line.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.extractTest(app: value) }
+            case "--wake-test":
+                // Puts the voice to sleep, then a muted reading: logs how long waking takes.
+                waitForEngine {
+                    self.kokoro.sleep()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                        let (volume, media) = (self.settings.volume, self.settings.mediaPolicy)
+                        self.settings.volume = 0
+                        self.settings.mediaPolicy = .keepPlaying
+                        Log.write("wake-test: reading while asleep")
+                        self.reader.read("Testing how quickly the voice wakes up after it was put to sleep.", source: "wake test", quiet: true)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 15) {
+                            self.reader.stop()
+                            self.settings.volume = volume
+                            self.settings.mediaPolicy = media
+                        }
+                    }
+                }
             case "--speed-test":
                 // Muted reading with speed changes; logs whether audio is re-made at each speed.
                 // "--speed-test=90" first stays idle 90 s (to test a cold, swapped-out engine).
@@ -710,6 +743,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             default:
                 break
             }
+        }
+    }
+
+    /// Logs what "read from the START paragraph to the end" would read in a
+    /// test page opened in the named browser (see scripts/extract-test.sh).
+    private func extractTest(app: String) {
+        DispatchQueue.global().async {
+            var found: AXUIElement?
+            for _ in 0..<5 where found == nil {  // the browser builds its tree after the first ask
+                found = self.grabber.findText(inApp: app, needle: "START")
+                if found == nil { sleep(1) }
+            }
+            guard let el = found else { Log.write("extract-test: START not found"); return }
+            let n = self.grabber.blockNeighbours(of: el)
+            Log.write("extract-test after START:\n" + (n?.after ?? "nil"))
         }
     }
 

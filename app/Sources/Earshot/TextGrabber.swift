@@ -293,7 +293,7 @@ final class TextGrabber {
                 startAt = blocks.count
             }
             if skip.contains(r) { return }
-            let kids = children(e)
+            let kids = readingChildren(e, role: r)
             // A block that has its own text runs is one paragraph, whatever
             // inline groups (bold, code, links) sit between those runs.
             let ownText = kids.contains { role($0) == "AXStaticText" && !(string($0, kAXValueAttribute) ?? "").trimmingCharacters(in: .whitespaces).isEmpty }
@@ -377,7 +377,7 @@ final class TextGrabber {
             }
             // Skip whole subtrees that are scrolled out of view.
             if let f = frame(el), f.height > 0, !f.intersects(rect) { return }
-            for c in children(el) { walk(c) }
+            for c in readingChildren(el, role: role(el)) { walk(c) }
         }
         walk(web)
         var out = ""
@@ -507,7 +507,7 @@ final class TextGrabber {
                 if !t.isEmpty { lines.append(t); total += t.count }
                 if r != "AXHeading" { return }
             }
-            for c in children(el) { walk(c, depth: depth + 1) }
+            for c in readingChildren(el, role: r) { walk(c, depth: depth + 1) }
         }
         walk(root, depth: 0)
         return lines.joined(separator: "\n")
@@ -628,13 +628,19 @@ final class TextGrabber {
 
     /// The static text containing `needle` in the named app's front window (debug).
     func findText(inApp name: String, needle: String) -> AXUIElement? {
-        guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.localizedName == name && $0.activationPolicy == .regular }) else {
-            Log.write("findText: no app \(name)"); return nil
+        // "pid:123" targets one process (e.g. a test browser beside the user's own).
+        let named = NSWorkspace.shared.runningApplications.filter {
+            name.hasPrefix("pid:") ? "pid:\($0.processIdentifier)" == name : $0.localizedName == name
         }
-        enableWebAccessibility(pid: app.processIdentifier)
-        usleep(500_000)
-        let root = AXUIElementCreateApplication(app.processIdentifier)
-        let wins = (attr(root, kAXWindowsAttribute) as? [AXUIElement]) ?? []
+        guard !named.isEmpty else { Log.write("findText: no app \(name)"); return nil }
+        named.forEach { enableWebAccessibility(pid: $0.processIdentifier) }
+        if name.hasPrefix("pid:") {
+            // Test browsers only: plain Chrome builds its page tree for this request.
+            named.forEach { AXUIElementSetAttributeValue(AXUIElementCreateApplication($0.processIdentifier), "AXEnhancedUserInterface" as CFString, kCFBooleanTrue) }
+        }
+        usleep(800_000)
+        // Every app of that name (a test browser may run beside the user's own).
+        let wins = named.flatMap { (attr(AXUIElementCreateApplication($0.processIdentifier), kAXWindowsAttribute) as? [AXUIElement]) ?? [] }
         var found: AXUIElement?
         var visited = 0
         func walk(_ el: AXUIElement) {
@@ -859,6 +865,16 @@ final class TextGrabber {
     private func string(_ el: AXUIElement, _ name: String) -> String? { attr(el, name) as? String }
     private func role(_ el: AXUIElement) -> String? { string(el, kAXRoleAttribute) }
     private func children(_ el: AXUIElement) -> [AXUIElement] { attr(el, kAXChildrenAttribute) as? [AXUIElement] ?? [] }
+
+    /// Children to read through: a table lists its rows *and* its columns, so
+    /// walking every child read each cell twice (row by row, then column by
+    /// column). Tables give just their rows.
+    func readingChildren(_ el: AXUIElement, role r: String?) -> [AXUIElement] {
+        if r == "AXTable" || r == "AXGrid" || r == "AXOutline", let rows = attr(el, "AXRows") as? [AXUIElement], !rows.isEmpty {
+            return rows
+        }
+        return children(el)
+    }
 
     private func frame(_ el: AXUIElement) -> CGRect? {
         guard let v = attr(el, "AXFrame") else { return nil }
@@ -1102,7 +1118,7 @@ extension TextGrabber {
                     }
                     return
                 }
-                for c in children(e) { walk(c) }
+                for c in readingChildren(e, role: role(e)) { walk(c) }
             }
             walk(root)
             return runs.isEmpty ? nil : (runs, text, cursor ?? 0)

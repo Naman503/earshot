@@ -270,6 +270,7 @@ private struct VoiceTab: View {
         switch kokoro.status {
         case .ready: "Ready (\(kokoro.voices.count) voices)"
         case .starting: "Starting… the Apple voice is used until it's ready"
+        case .asleep: "Asleep to save memory — wakes when you read"
         case .notInstalled: "Not installed — run scripts/install-engine.sh"
         case .failed(let m): "Failed: \(m)"
         }
@@ -746,6 +747,7 @@ private struct PronunciationsSection: View {
 private struct GeneralTab: View {
     @ObservedObject private var permissions = Permissions.shared
     @EnvironmentObject var kokoro: KokoroEngine
+    @EnvironmentObject var settings: Settings
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var mic = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
     @State private var speech = SFSpeechRecognizer.authorizationStatus() == .authorized
@@ -779,11 +781,19 @@ private struct GeneralTab: View {
                     switch kokoro.status {
                     case .ready: Label("Running", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
                     case .starting: Label("Starting…", systemImage: "hourglass").foregroundStyle(.secondary)
+                    case .asleep: Label("Asleep (memory freed)", systemImage: "moon.zzz").foregroundStyle(.secondary)
                     case .notInstalled: Text("Not installed — run scripts/install-engine.sh").foregroundStyle(.orange)
                     case .failed(let m): Text(m).foregroundStyle(.red)
                     }
                 }
-                Text("Runs entirely on this Mac. Nothing you read or hear leaves it.").font(.caption).foregroundStyle(.secondary)
+                Toggle("Free the voice's memory when it isn't being used", isOn: $settings.sleepVoiceWhenIdle)
+                if settings.sleepVoiceWhenIdle {
+                    Picker("After", selection: $settings.sleepVoiceAfterMinutes) {
+                        ForEach([5, 10, 15, 30, 60], id: \.self) { Text("\($0) minutes without reading").tag($0) }
+                    }
+                }
+                Text("The voice uses about 0.8 GB while it's ready. Freeing it saves that memory; the first reading afterwards takes about 5 seconds to start (you'll see “Waking the voice…”). Runs entirely on this Mac. Nothing you read or hear leaves it.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Toggle("Open at login", isOn: $launchAtLogin)
                 .onChange(of: launchAtLogin) { _, on in

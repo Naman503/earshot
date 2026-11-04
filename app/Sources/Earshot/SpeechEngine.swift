@@ -57,7 +57,10 @@ struct SpokenWord: Equatable {
 /// are answered in order; stale ones are dropped with `cancel(before:)`.
 @MainActor
 final class KokoroEngine: ObservableObject {
-    enum Status: Equatable { case notInstalled, starting, ready, failed(String) }
+    enum Status: Equatable { case notInstalled, starting, ready, asleep, failed(String) }
+    /// Woken from sleep and not ready yet: readings wait for it rather than
+    /// switching to the Apple voice.
+    private(set) var waking = false
 
     @Published private(set) var status: Status = .starting
     @Published private(set) var voices: [String] = []
@@ -133,11 +136,28 @@ final class KokoroEngine: ObservableObject {
         process = nil
     }
 
+    /// Frees the voice's memory (~0.8 GB) by stopping the engine; the next
+    /// reading wakes it (a few seconds).
+    func sleep() {
+        guard status == .ready else { return }
+        status = .asleep
+        Log.write("engine: asleep (memory freed)")
+        stop()
+    }
+
+    func wake() {
+        guard status == .asleep else { return }
+        waking = true
+        Log.write("engine: waking")
+        start()
+    }
+
     private func terminated(code: Int32) {
         Log.write("engine: exited \(code)")
         process = nil
         for (_, c) in waiting { c.resume(returning: nil) }
         waiting.removeAll()
+        guard status != .asleep else { return }  // stopped on purpose
         guard restarts < 3 else { status = .failed("Engine keeps crashing; see ~/Library/Logs/Earshot"); return }
         restarts += 1
         status = .starting
@@ -162,6 +182,7 @@ final class KokoroEngine: ObservableObject {
     /// A reading is about to start: have the engine bring the voice into RAM
     /// now (it may have been pushed to disk), while the text is being grabbed.
     func warm(voice: String) {
+        if status == .asleep { wake(); return }
         guard status == .ready else { return }
         send(["op": "warm", "voice": voice])
     }
@@ -205,6 +226,7 @@ final class KokoroEngine: ObservableObject {
         switch h["type"] as? String {
         case "ready":
             status = .ready
+            waking = false
             restarts = 0
             send(["op": "voices"])
             Log.write("engine: ready")
