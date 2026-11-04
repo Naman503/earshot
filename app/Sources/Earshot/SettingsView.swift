@@ -205,7 +205,7 @@ private struct VoiceTab: View {
                 Picker("Hold to slow down", selection: $settings.holdSlowerKey) {
                     ForEach(HoldKey.allCases, id: \.self) { Text($0.title).tag($0) }
                 }
-                Text("While reading, hold the key on its own to glide to the boost or slow speed; let go to return to normal. Pressing it with another key (⌃C, fn+F1…) does nothing. The boost shortcut (\(settings.shortcuts[.boost].map(HotKeys.describe) ?? "not set")) still switches until pressed again.")
+                Text("While reading, hold the key on its own for the boost or slow speed; let go to return to normal. The voice switches cleanly at the next word, re-voiced at the new speed (never stretched). Pressing it with another key (⌃C, fn+F1…) does nothing. The boost shortcut (\(settings.shortcuts[.boost].map(HotKeys.describe) ?? "not set")) still switches until pressed again.")
                     .font(.caption).foregroundStyle(.secondary)
                 Text("Click a voice to hear it at this speed.").font(.caption).foregroundStyle(.secondary)
                 ForEach(VoiceCatalog.grouped(available: kokoro.voices), id: \.title) { group in

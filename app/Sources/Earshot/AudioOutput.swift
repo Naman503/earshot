@@ -168,8 +168,9 @@ final class AudioOutput: ObservableObject {
 
     func apply(speedStretch: Double, volume: Double) {
         stretch.rate = Float(max(0.5, min(speedStretch, 4)))
-        // Most overlap = smoothest sound while it covers a speed change.
-        if stretch.overlap != 32 { stretch.overlap = 32 }
+        // At 1× the stretch is switched off entirely: even "doing nothing" it
+        // colours the voice, which is what made normal speed sound robotic.
+        stretch.bypass = abs(speedStretch - 1) < 0.01
         // Up to 1 is plain volume; above it, boost up to +12 dB into the limiter.
         player.volume = Float(min(volume, 1))
         gain.globalGain = volume > 1 ? Float((volume - 1) * 12) : 0
@@ -209,7 +210,7 @@ final class AudioOutput: ObservableObject {
     }
 
     /// Delay the time-stretch and limiter add (both look ahead in the audio).
-    var effectsLatency: Double { stretch.auAudioUnit.latency + gain.auAudioUnit.latency + limiter.auAudioUnit.latency }
+    var effectsLatency: Double { (stretch.bypass ? 0 : stretch.auAudioUnit.latency) + gain.auAudioUnit.latency + limiter.auAudioUnit.latency }
     private var latencyDevice: AudioDeviceID = 0
     private var deviceLatency = 0.0
 
