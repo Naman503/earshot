@@ -201,6 +201,13 @@ final class TextGrabber {
                                       wholePage: unit == .fromHere || unit == .window)
         }
         if unit == .paragraph, let n = blockNeighbours(of: el) {
+            // Chromium ends "the paragraph" at inline code (and some other inline
+            // elements), which lost the rest of the sentence every time. The page's
+            // own block holding the pointer has it all: use it when it contains
+            // what Chromium returned.
+            if let whole = n.current, whole.count > text.count, normalizedWord(whole).contains(normalizedWord(text)) {
+                grab.text = whole
+            }
             grab.before = n.before
             // A tap between lines starts "below" at the tapped paragraph itself.
             var after = n.after.components(separatedBy: "\n")
@@ -264,7 +271,7 @@ final class TextGrabber {
         return main
     }
 
-    func blockNeighbours(of el: AXUIElement) -> (before: String, after: String)? {
+    func blockNeighbours(of el: AXUIElement) -> (before: String, current: String?, after: String)? {
         guard let boundary = readBoundary(of: el, scope: readScope) else { return nil }
         // el and its ancestors up to the boundary, to place a tap that landed
         // between lines or on a tool row.
@@ -293,6 +300,12 @@ final class TextGrabber {
                 startAt = blocks.count
             }
             if skip.contains(r) { return }
+            // Status pop-ups and alerts shown inside the page ("… reloaded",
+            // "Received message from …") aren't part of what you're reading.
+            if r == "AXGroup", let sub = string(e, kAXSubroleAttribute),
+               ["AXApplicationStatus", "AXApplicationAlert", "AXApplicationAlertDialog", "AXApplicationLog", "AXApplicationTimer", "AXApplicationMarquee"].contains(sub) {
+                return
+            }
             let kids = readingChildren(e, role: r)
             // A block that has its own text runs is one paragraph, whatever
             // inline groups (bold, code, links) sit between those runs.
@@ -314,9 +327,9 @@ final class TextGrabber {
         }
         walk(boundary)
         guard visited < 12000 else { return nil }
-        if let i = current { return (blocks[..<i].joined(separator: "\n"), blocks[(i + 1)...].joined(separator: "\n")) }
+        if let i = current { return (blocks[..<i].joined(separator: "\n"), blocks[i], blocks[(i + 1)...].joined(separator: "\n")) }
         guard let i = startAt else { return nil }
-        return (blocks[..<i].joined(separator: "\n"), blocks[i...].joined(separator: "\n"))
+        return (blocks[..<i].joined(separator: "\n"), nil, blocks[i...].joined(separator: "\n"))
     }
 
     /// Start and end of the text reading stays inside (see `readBoundary`).
