@@ -31,6 +31,8 @@ public struct TapRecognizer {
     public var minFingers = 3
     public var maxTapDuration = 0.35
     public var maxMovement = 0.04
+    /// Most the fingers may travel over the whole touch (a swipe travels far).
+    public var maxTravel = 0.06
     public var multiTapWindow = 0.30
     /// Highest bound tap count per finger count. A tap that could still become
     /// a longer bound sequence waits `multiTapWindow` for the next tap.
@@ -41,6 +43,11 @@ public struct TapRecognizer {
     private var anchor: CGPoint?
     private var anchorFingers = 0
     private var moved = 0.0
+    /// Distance the fingers' centre travelled over the whole touch, frame to
+    /// frame (skipping frames where fingers were added or lifted, where the
+    /// centre jumps without anything moving).
+    private var travel = 0.0
+    private var last: (count: Int, centre: CGPoint)?
     private var pending: (fingers: Int, taps: Int, at: Double)?
 
     public init() {}
@@ -54,8 +61,12 @@ public struct TapRecognizer {
                 maxFingers = 0
                 anchor = nil
                 moved = 0
+                travel = 0
+                last = nil
             }
             let c = Self.centroid(frame.points)
+            if let l = last, l.count == n { travel += hypot(c.x - l.centre.x, c.y - l.centre.y) }
+            last = (n, c)
             if n > maxFingers {
                 maxFingers = n
                 anchor = c
@@ -68,7 +79,10 @@ public struct TapRecognizer {
         // All fingers lifted.
         guard let start = touchStart else { return out }
         touchStart = nil
-        let isTap = maxFingers >= minFingers && frame.time - start <= maxTapDuration && moved <= maxMovement
+        // A quick desktop swipe has all fingers down only briefly; it must not
+        // pass for a tap just because that moment was still.
+        let isTap = maxFingers >= minFingers && frame.time - start <= maxTapDuration
+            && moved <= maxMovement && travel <= maxTravel
         guard isTap else { pending = nil; return out }
 
         if let p = pending, p.fingers == maxFingers {

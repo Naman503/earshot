@@ -43,6 +43,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         Log.write("launch \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") ?? "") accessibility=\(AXIsProcessTrusted())")
         watchForStalls()
+        // A swipe that switched desktops can register as a tap a moment before
+        // the switch: if reading started from a gesture just now, undo it.
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.lastSpaceChange = Date()
+                if Date().timeIntervalSince(self.lastGesture) < 1, self.reader.isActive {
+                    Log.write("gesture: reading stopped — that was a desktop swipe")
+                    self.reader.stop()
+                }
+            }
+        }
         // Free the voice's memory after a while without reading, if chosen.
         Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -70,6 +82,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         trackpad.onGesture = { [weak self] g in
             guard let self, self.settings.gesturesEnabled, let action = self.settings.gestures[g], action != .none else { return }
+            // A desktop switch (four-finger swipe) right around it: it was a swipe.
+            if Date().timeIntervalSince(self.lastSpaceChange) < 1 {
+                Log.write("gesture: \(g.label) ignored (desktop switch)")
+                return
+            }
+            self.lastGesture = Date()
             Log.write("gesture: \(g.label) → \(action.rawValue)")
             if action != .stop, action != .pauseResume { self.kokoro.warm(voice: self.settings.voice) }
             // While a notification asks "Read it?", a reading tap means yes.
@@ -144,6 +162,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private var lastReading = Date()
+    private var lastSpaceChange = Date.distantPast
+    private var lastGesture = Date.distantPast
     private let stallQueue = DispatchQueue(label: "earshot.stalls", qos: .utility)
     private var stallTimer: DispatchSourceTimer?
 

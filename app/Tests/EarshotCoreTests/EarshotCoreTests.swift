@@ -243,3 +243,37 @@ final class ChatLabelTests: XCTestCase {
                        "The watcher lost its connection. Checking now.")
     }
 }
+
+final class SwipeIsNotTapTests: XCTestCase {
+    /// Fingers landing one by one, sliding fast across, lifting one by one — a
+    /// desktop swipe. All four are down only briefly, at the end of the slide.
+    func testFastFourFingerSwipeIsNotATap() {
+        var r = TapRecognizer()
+        r.maxTaps = [4: 1]
+        var out: [TrackpadTap] = []
+        func frame(_ t: Double, _ xs: [Double], dx: Double) {
+            out += r.feed(.init(time: t, points: xs.map { CGPoint(x: $0 + dx, y: 0.5) }))
+        }
+        frame(0.00, [0.30], dx: 0)
+        frame(0.04, [0.30, 0.35, 0.40], dx: 0.12)
+        frame(0.06, [0.30, 0.35, 0.40], dx: 0.20)
+        frame(0.08, [0.30, 0.35, 0.40, 0.45], dx: 0.27)
+        frame(0.10, [0.30, 0.35, 0.40, 0.45], dx: 0.28)
+        frame(0.12, [0.30, 0.35, 0.40], dx: 0.33)
+        out += r.feed(.init(time: 0.16, points: []))
+        out += r.tick(now: 1)
+        XCTAssertTrue(out.isEmpty, "a swipe was taken for \(out)")
+    }
+
+    func testRealFourFingerTapStillWorks() {
+        var r = TapRecognizer()
+        r.maxTaps = [4: 1]
+        var out: [TrackpadTap] = []
+        out += r.feed(.init(time: 0.00, points: [0.30, 0.35, 0.40].map { CGPoint(x: $0, y: 0.5) }))
+        out += r.feed(.init(time: 0.03, points: [0.30, 0.35, 0.40, 0.45].map { CGPoint(x: $0, y: 0.5) }))
+        out += r.feed(.init(time: 0.10, points: [0.301, 0.351, 0.401, 0.451].map { CGPoint(x: $0, y: 0.5) }))
+        out += r.feed(.init(time: 0.15, points: []))
+        out += r.tick(now: 1)
+        XCTAssertEqual(out, [TrackpadTap(fingers: 4, taps: 1)])
+    }
+}
