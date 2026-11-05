@@ -74,6 +74,10 @@ final class Reader: ObservableObject {
     private var versions: [Int: [SpeedMode: Version]] = [:]
     /// Which chunks are code / commands, read at the fast speed.
     private var technical: [Bool] = []
+    /// Debug tests read silently and leave other audio alone without touching
+    /// saved settings (a test that changed them and was cut short left Earshot
+    /// at volume 0).
+    var testMuted = false
     /// When the current reading was asked for (to log how fast it started).
     private var readStartedAt: Date?
     /// When the untouched audio runs out after a speed change (for the log).
@@ -190,7 +194,7 @@ final class Reader: ObservableObject {
             return false
         }
 
-        if settings.mediaPolicy == .pauseAndResume, !media.hasPaused { media.pauseOthers() }
+        if settings.mediaPolicy == .pauseAndResume, !testMuted, !media.hasPaused { media.pauseOthers() }
         do {
             try audio.prepare(device: device)
         } catch {
@@ -473,7 +477,7 @@ final class Reader: ObservableObject {
         // Kokoro audio is always made at the speed it plays at (speed changes
         // re-voice it), so it never goes through the time-stretch; only the
         // Apple voice, made at one speed, is sped up by the player.
-        audio.apply(speedStretch: usesKokoro ? 1 : speed / bakedSpeed, volume: settings.volume)
+        audio.apply(speedStretch: usesKokoro ? 1 : speed / bakedSpeed, volume: testMuted ? 0 : settings.volume)
     }
 
     /// New speed without stretching anything: the audio playing now carries on
@@ -868,7 +872,7 @@ final class Reader: ObservableObject {
     /// the output was just reconfigured and speech should wait a moment.
     @discardableResult
     private func quietOthers() -> Bool {
-        guard settings.mediaPolicy == .duck else { return false }
+        guard settings.mediaPolicy == .duck, !testMuted else { return false }
         guard ducker.isLingering || !MediaControl.playingApps().isEmpty else { return false }
         var fresh = false
         if !ducker.duck(to: settings.duckLevel, freshlyBuilt: &fresh), !media.hasPaused { media.pauseOthers() }

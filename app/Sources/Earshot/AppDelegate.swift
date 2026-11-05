@@ -689,14 +689,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                             Log.write("read-muted: nothing found"); return
                         }
                         DispatchQueue.main.async {
-                            let (volume, media) = (self.settings.volume, self.settings.mediaPolicy)
-                            self.settings.volume = 0
-                            self.settings.mediaPolicy = .keepPlaying
+                            self.reader.testMuted = true
                             self.reader.read(loc.text, source: "muted test", quiet: true, locator: loc.locator)
                             DispatchQueue.main.asyncAfter(deadline: .now() + 20) {
                                 self.reader.stop()
-                                self.settings.volume = volume
-                                self.settings.mediaPolicy = media
+                                self.reader.testMuted = false
                             }
                         }
                     }
@@ -710,15 +707,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 waitForEngine {
                     self.kokoro.sleep()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                        let (volume, media) = (self.settings.volume, self.settings.mediaPolicy)
-                        self.settings.volume = 0
-                        self.settings.mediaPolicy = .keepPlaying
+                        self.reader.testMuted = true
                         Log.write("wake-test: reading while asleep")
                         self.reader.read("Testing how quickly the voice wakes up after it was put to sleep.", source: "wake test", quiet: true)
                         DispatchQueue.main.asyncAfter(deadline: .now() + 15) {
                             self.reader.stop()
-                            self.settings.volume = volume
-                            self.settings.mediaPolicy = media
+                            self.reader.testMuted = false
                         }
                     }
                 }
@@ -758,9 +752,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 // Muted reading with speed changes; logs whether audio is re-made at each speed.
                 // "--speed-test=90" first stays idle 90 s (to test a cold, swapped-out engine).
                 waitForEngine { DispatchQueue.main.asyncAfter(deadline: .now() + (Double(value) ?? 0)) {
-                    let (volume, media) = (self.settings.volume, self.settings.mediaPolicy)
-                    self.settings.volume = 0
-                    self.settings.mediaPolicy = .keepPlaying
+                    self.reader.testMuted = true
                     let text = String(repeating: "This sentence is here so the reader has plenty of speech to work with during the test. ", count: 12)
                     self.reader.read(text, source: "speed test", quiet: true)
                     for (t, mode) in [(2.0, Reader.SpeedMode.slow), (11, .normal), (13, .boost), (17, .normal)] {
@@ -773,8 +765,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     }
                     DispatchQueue.main.asyncAfter(deadline: .now() + 18.5) {
                         self.reader.stop()
-                        self.settings.volume = volume
-                        self.settings.mediaPolicy = media
+                        self.reader.testMuted = false
                     }
                 } }
             case "--settings":
