@@ -17,6 +17,12 @@ final class HUD {
 
     private var scrollMonitor: Any?
 
+    /// Earshot's overlays (bar, word marker, outline) show over whatever app
+    /// you're in: on every desktop, over full-screen apps, and with Stage
+    /// Manager, which otherwise hides them because they aren't the front app's.
+    static let overlayBehavior: NSWindow.CollectionBehavior =
+        [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle, .canJoinAllApplications, .auxiliary]
+
     init(reader: Reader, settings: Settings) {
         self.reader = reader
         self.settings = settings
@@ -28,7 +34,7 @@ final class HUD {
         panel.isOpaque = false
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        panel.collectionBehavior = HUD.overlayBehavior
         panel.contentView = NSHostingView(rootView: HUDView(reader: reader, settings: settings))
         // While you scroll or drag a window, the marker stays on the word that
         // was being read and moves with the page, so you can scroll back to it;
@@ -173,7 +179,7 @@ final class HUD {
             w.backgroundColor = .clear
             w.ignoresMouseEvents = true
             w.level = .statusBar
-            w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+            w.collectionBehavior = HUD.overlayBehavior
             let v = NSView()
             v.wantsLayer = true
             v.layer?.borderWidth = 2.5
@@ -370,7 +376,7 @@ final class WordMarker {
             w.hasShadow = false
             w.level = .floating
             w.isReleasedWhenClosed = false
-            w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+            w.collectionBehavior = HUD.overlayBehavior
             let v = NSView()
             v.wantsLayer = true
             let accent = NSColor.controlAccentColor
