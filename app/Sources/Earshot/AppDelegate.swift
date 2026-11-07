@@ -260,6 +260,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             await MainActor.run {
                 let app = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
                 Log.write("grab \(unit.rawValue) in \(app): \(grab?.source ?? "nothing") in \(Int(Date().timeIntervalSince(started) * 1000)) ms: \(grab?.text.prefix(80) ?? "")")
+                if (grab?.text.count ?? 0) < 25 {
+                    // Grabbed almost nothing: record what's under the pointer, to see why.
+                    let grabber = self.grabber
+                    DispatchQueue.global().async { Log.write("grab: little text — under the pointer:\n  \(grabber.chainAt(point))") }
+                }
                 guard var grab else { self.reader.flash("Couldn't find text under the pointer"); return }
                 // Paragraph reach: read N paragraphs above and below as set in Settings.
                 if unit == .paragraph, self.settings.paragraphsBefore > 0 || self.settings.paragraphsAfter != 0 {

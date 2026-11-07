@@ -817,6 +817,22 @@ final class TextGrabber {
     }
 
     /// Describes what Accessibility exposes at `point` (for --probe).
+    /// Short description of what's under the pointer and its ancestors (for
+    /// taps that grab almost nothing).
+    func chainAt(_ point: CGPoint) -> String {
+        guard let el = element(at: point) else { return "no element" }
+        var out: [String] = []
+        var cur: AXUIElement? = el
+        while let c = cur, out.count < 14 {
+            let cls = (attr(c, "AXDOMClassList") as? [String])?.prefix(2).joined(separator: ".") ?? ""
+            let text = (string(c, kAXValueAttribute) ?? string(c, kAXTitleAttribute) ?? string(c, kAXDescriptionAttribute) ?? "").prefix(30)
+            let f = frame(c).map { "\(Int($0.minX)),\(Int($0.minY)) \(Int($0.width))x\(Int($0.height))" } ?? "-"
+            out.append("\(role(c) ?? "?")/\(string(c, kAXSubroleAttribute) ?? "") .\(cls) kids=\(children(c).count) [\(f)] “\(text)”")
+            cur = attrElement(c, kAXParentAttribute)
+        }
+        return out.joined(separator: "\n  < ")
+    }
+
     func diagnose(at point: CGPoint) -> String {
         guard let el = element(at: point) else { return "no element" }
         var pid: pid_t = 0
@@ -934,7 +950,31 @@ final class TextGrabber {
 
     private func element(at p: CGPoint) -> AXUIElement? {
         var el: AXUIElement?
-        return AXUIElementCopyElementAtPosition(system, Float(p.x), Float(p.y), &el) == .success ? el : nil
+        guard AXUIElementCopyElementAtPosition(system, Float(p.x), Float(p.y), &el) == .success, let hit = el else { return nil }
+        return deepest(at: p, from: hit)
+    }
+
+    /// The system's hit test stops at some containers — a page embedded in
+    /// another page (Claude's doc panel) comes back as the whole embedded page,
+    /// and reading then started at its top ("Tab 1"). From a page or a large
+    /// box, step down to the smallest child under the point.
+    private func deepest(at p: CGPoint, from hit: AXUIElement) -> AXUIElement {
+        let r = role(hit) ?? ""
+        let big = frame(hit).map { $0.width > 260 && $0.height > 80 } ?? false
+        guard r == "AXWebArea" || (r == "AXGroup" && big) || r == "AXScrollArea" else { return hit }
+        var cur = hit
+        for _ in 0..<60 {
+            var best: (AXUIElement, CGFloat)?
+            for c in children(cur) {
+                guard let f = frame(c), f.contains(p), f.width > 0, f.height > 0 else { continue }
+                let area = f.width * f.height
+                if best == nil || area < best!.1 { best = (c, area) }
+            }
+            guard let next = best?.0 else { break }
+            cur = next
+            if role(cur) == "AXStaticText" { break }
+        }
+        return cur
     }
 
     private func attr(_ el: AXUIElement, _ name: String) -> CFTypeRef? {
