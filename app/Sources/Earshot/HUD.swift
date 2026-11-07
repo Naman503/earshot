@@ -214,7 +214,7 @@ final class HUD {
         // only a beat later), then measure once the page settles.
         if e.type == .scrollWheel, e.hasPreciseScrollingDeltas, let view = lastView,
            view.contains(CGEvent(source: nil)?.location ?? .zero), sourceInFront {
-            marker.shift(by: -e.scrollingDeltaY)
+            followUserScroll(-e.scrollingDeltaY)
             settleAfterScroll?.cancel()
             let settle = DispatchWorkItem { [weak self] in self?.remeasureMarker() }
             settleAfterScroll = settle
@@ -238,6 +238,60 @@ final class HUD {
     }
 
     private var lastView: CGRect?
+
+    // One stretch of your scrolling (fingers plus the coast after).
+    private var burstAt = Date.distantPast
+    private var burstShift: CGFloat = 0
+    private var burstStartY: CGFloat?
+    private var burstFrozen = false
+    private var burstProbed = false
+    /// The direction the page couldn't move last time (+1 content up = at the
+    /// bottom, -1 = at the top, 0 = free).
+    private var scrollEdge = 0
+
+    /// Moves the highlight with your scroll, but only while the page really
+    /// moves: at the end of a page your swipes still arrive though the text
+    /// stays put. A quick check early in each swipe tells the two apart; at
+    /// an end the highlight stays on its word.
+    private func followUserScroll(_ dy: CGFloat) {
+        guard dy != 0 else { return }
+        let dir = dy > 0 ? 1 : -1
+        if Date().timeIntervalSince(burstAt) > 0.25 || (burstShift != 0 && (burstShift > 0) != (dy > 0)) {
+            // A new swipe (or a change of direction).
+            burstShift = 0
+            burstProbed = false
+            burstStartY = marker.currentRect?.midY
+            burstFrozen = scrollEdge == dir  // it was stuck this way: wait for proof it moves
+        }
+        burstAt = Date()
+        burstShift += dy
+        if !burstFrozen { marker.shift(by: dy) }
+        guard !burstProbed, abs(burstShift) >= 20, let startY = burstStartY, let locator = lastLocator else { return }
+        burstProbed = true
+        let sent = burstShift
+        finder.asyncAfter(deadline: .now() + 0.18) {
+            let now = locator.remeasure()
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let now, self.lastLocator === locator else { return }
+                    let moved = startY - now.midY
+                    if abs(moved) < abs(sent) * 0.3 {
+                        // The page isn't moving this way: hold the highlight on the word.
+                        self.scrollEdge = dir
+                        self.burstFrozen = true
+                        if self.sourceInFront { self.marker.show(now) }
+                    } else {
+                        self.scrollEdge = 0
+                        if self.burstFrozen {
+                            // It moves after all (new text arrived): follow again from here.
+                            self.burstFrozen = false
+                            if self.sourceInFront { self.marker.show(now) }
+                        }
+                    }
+                }
+            }
+        }
+    }
     private var settleAfterScroll: DispatchWorkItem?
 
     private func remeasureMarker() {
@@ -301,6 +355,7 @@ final class HUD {
         lastLocator = nil
         pageStuck = false
         lastView = nil
+        scrollEdge = 0
         lineGap = nil
         lastLineY = nil
         missedSince = nil
@@ -567,6 +622,9 @@ final class WordMarker {
     private var tintStyle: HighlightStyle?
     private var underlineHeight: CGFloat = 3
     private var tintColor: NSColor?
+
+    /// Where the marker is now (top-left screen coordinates).
+    var currentRect: CGRect? { visible ? lastRect : nil }
 
     /// Moves the marker up by `dy` points (as the page scrolls under it).
     func shift(by dy: CGFloat) {
