@@ -1008,6 +1008,7 @@ final class TextGrabber {
     }
 
     private func string(_ el: AXUIElement, _ name: String) -> String? { attr(el, name) as? String }
+    func debugString(_ el: AXUIElement) -> String { string(el, kAXValueAttribute) ?? "" }
     private func role(_ el: AXUIElement) -> String? { string(el, kAXRoleAttribute) }
     private func children(_ el: AXUIElement) -> [AXUIElement] { attr(el, kAXChildrenAttribute) as? [AXUIElement] ?? [] }
 

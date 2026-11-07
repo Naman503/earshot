@@ -108,18 +108,79 @@ final class HUD {
     /// the difference (a line at a time while reading); when the word is above
     /// the window, it glides down to it.
     private func follow(_ box: CGRect, in view: CGRect) {
+        guard let locator = lastLocator, !scroller.isBusy else { return }
         let target = view.minY + view.height * settings.autoScrollAnchor
         let dy = box.midY - target
+        let offBottom = box.maxY > view.maxY - 4
+        let offTop = box.minY < view.minY + 4
         let below = dy > box.height * 0.8
-        let above = box.minY < view.minY + 4
-        guard below || above, !scroller.isBusy || abs(dy) > view.height * 0.5 else { return }
+        guard below || offTop else { return }
+        // The page didn't move last time (end of the page, or the app ignores
+        // scroll steps): leave it, unless the word is now out of sight — then
+        // jump it into view the plain way.
+        // Glide only with the pointer resting over the page (scrolls go where
+        // the pointer is); otherwise, once the word leaves the window, bring
+        // it into view the plain way.
+        if !SmoothScroller.canScroll(pid: locator.pid, view: view) {
+            guard offBottom || offTop, Date().timeIntervalSince(lastAutoScroll) > 0.8 else { return }
+            lastAutoScroll = Date()
+            stats.scrolled += 1
+            finder.async { _ = locator.scrollToKeepVisible() }
+            return
+        }
+        if pageStuck {
+            guard offBottom || offTop else { return }
+            pageStuck = false
+            stats.scrolled += 1
+            finder.async { _ = locator.scrollToKeepVisible() }
+            return
+        }
         lastAutoScroll = Date()
         stats.scrolled += 1
         let duration = min(0.6, 0.22 + abs(dy) / 3000)
-        // Aim the scroll at a point inside the window even when the word is off-screen.
-        let at = CGPoint(x: min(max(box.midX, view.minX + 20), view.maxX - 20), y: view.midY)
-        scroller.scroll(by: dy, at: at, duration: duration) { [weak self] step in
-            self?.marker.shift(by: step)  // the highlight rides along with the text
+        let startY = box.midY
+        scroller.scroll(by: dy, pid: locator.pid, view: view, duration: duration, step: { [weak self] in
+            self?.trackGlide(locator)
+        }, done: { [weak self] in
+            // Measure where the word really went: the highlight follows the
+            // text, never the plan.
+            guard let self else { return }
+            self.finder.async {
+                usleep(60_000)
+                let now = locator.remeasure()
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        guard let now else { return }
+                        if self.sourceInFront, self.lastLocator === locator { self.marker.show(now) }
+                        let moved = startY - now.midY
+                        if abs(moved) < abs(dy) * 0.3 {
+                            self.pageStuck = true
+                            Log.write("highlight: page didn't scroll (asked \(Int(dy)), moved \(Int(moved)))")
+                        }
+                    }
+                }
+            }
+        })
+    }
+
+    /// Set when a glide didn't move the page; cleared by your own scrolling
+    /// or a new reading.
+    private var pageStuck = false
+    private var glideBusy = false
+
+    /// While gliding, keep the highlight on the word as the page actually moves.
+    private func trackGlide(_ locator: WordLocator) {
+        guard !glideBusy, Date().timeIntervalSince(lastFollow) > 0.033 else { return }
+        lastFollow = Date()
+        glideBusy = true
+        finder.async {
+            let box = locator.remeasure()
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self.glideBusy = false
+                    if let box, self.sourceInFront, self.lastLocator === locator { self.marker.show(box) }
+                }
+            }
         }
     }
 
@@ -132,6 +193,7 @@ final class HUD {
         // Earshot's own smooth scrolling isn't you taking over.
         if e.cgEvent?.getIntegerValueField(.eventSourceUserData) == SmoothScroller.tag { return }
         lastUserScroll = Date()
+        pageStuck = false
         scrollEnd?.cancel()
         let end = DispatchWorkItem { [weak self] in
             guard let self else { return }
@@ -199,6 +261,7 @@ final class HUD {
         }
         pending = nil
         lastLocator = nil
+        pageStuck = false
         missedSince = nil
         marker.hide()
     }
@@ -530,17 +593,29 @@ final class WordMarker {
     }
 }
 
-/// Scrolls the app under a point smoothly, like a trackpad: many small pixel
-/// scroll steps over a short time with ease-in-out, tagged so Earshot's own
-/// scroll watcher can tell them from yours.
+/// Scrolls an app smoothly, like a trackpad: many small pixel scroll steps
+/// over a short time with ease-in-out. Each step is an ordinary scroll at the
+/// pointer's current spot (apps like Claude and Brave ignore scrolls sent any
+/// other way), so the pointer itself never moves. It only scrolls while the
+/// pointer rests over the page being read, and steps are tagged so Earshot's
+/// own scroll watcher can tell them from yours.
 @MainActor
 final class SmoothScroller {
     static let tag: Int64 = 0x4541_5253  // "EARS"
     private var timer: Timer?
     private(set) var isBusy = false
 
-    /// `dy` > 0 moves the content up (shows what's below).
-    func scroll(by dy: CGFloat, at point: CGPoint, duration: Double, step: @escaping (CGFloat) -> Void) {
+    /// Whether a glide can run now: the pointer is over `view` in the app's
+    /// own window (nothing else on top).
+    static func canScroll(pid: pid_t, view: CGRect) -> Bool {
+        guard let mouse = CGEvent(source: nil)?.location, view.insetBy(dx: 2, dy: 2).contains(mouse) else { return false }
+        return windowOwner(at: mouse) == pid
+    }
+
+    /// `dy` > 0 moves the content up (shows what's below). Stops early if the
+    /// pointer leaves the page.
+    func scroll(by dy: CGFloat, pid: pid_t, view: CGRect, duration: Double,
+                step: @escaping () -> Void, done: @escaping () -> Void) {
         timer?.invalidate()
         let start = Date()
         var sent: CGFloat = 0
@@ -551,22 +626,37 @@ final class SmoothScroller {
                 let eased = p < 0.5 ? 4 * p * p * p : 1 - pow(-2 * p + 2, 3) / 2
                 let goal = (dy * eased).rounded()
                 let delta = goal - sent
+                var ok = true
                 if delta != 0 {
-                    Self.post(-delta, at: point)
-                    sent = goal
-                    step(delta)
+                    ok = Self.post(-delta, pid: pid, view: view)
+                    if ok { sent = goal; step() }
                 }
-                if p >= 1 { t.invalidate(); self?.isBusy = false }
+                if p >= 1 || !ok { t.invalidate(); self?.isBusy = false; done() }
             }
         }
     }
 
-    private static func post(_ pixels: CGFloat, at point: CGPoint) {
-        guard let e = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
-                              wheel1: Int32(pixels), wheel2: 0, wheel3: 0) else { return }
-        e.location = point
+    /// One scroll step at the pointer, only while it's over the page.
+    @discardableResult
+    static func post(_ pixels: CGFloat, pid: pid_t, view: CGRect) -> Bool {
+        guard let mouse = CGEvent(source: nil)?.location, view.contains(mouse),
+              let e = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
+                              wheel1: Int32(pixels), wheel2: 0, wheel3: 0) else { return false }
+        e.location = mouse
         e.setIntegerValueField(.eventSourceUserData, value: tag)
-        e.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)  // trackpad-style: apps don't add their own animation
+        e.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
         e.post(tap: .cghidEventTap)
+        return true
+    }
+
+    /// The app owning the frontmost ordinary window at `point` (top-left coordinates).
+    static func windowOwner(at point: CGPoint) -> pid_t? {
+        let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        for w in list where (w[kCGWindowLayer as String] as? Int) == 0 {
+            guard let b = w[kCGWindowBounds as String] as? NSDictionary, let r = CGRect(dictionaryRepresentation: b),
+                  r.contains(point) else { continue }
+            return w[kCGWindowOwnerPID as String] as? pid_t
+        }
+        return nil
     }
 }

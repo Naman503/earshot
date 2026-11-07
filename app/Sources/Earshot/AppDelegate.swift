@@ -753,6 +753,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     }
                     Log.write("follow-test: \(found) found, \(missed) missed")
                 }
+            case "--scroll-test":
+                // "App|needle": glides that app's page 150 px up and back with
+                // Earshot's scroll steps (pointer must rest over the page),
+                // logging how far the text really moved.
+                DispatchQueue.global().async {
+                    let parts = value.components(separatedBy: "|")
+                    guard let el = self.grabber.findText(inApp: parts[0], needle: parts[1]),
+                          let f0 = self.grabber.elementFrame(el) else { Log.write("scroll-test: no text"); return }
+                    var pid: pid_t = 0
+                    AXUIElementGetPid(el, &pid)
+                    let view = CGRect(x: 0, y: 0, width: 20000, height: 20000)  // the window check still applies
+                    let ok = DispatchQueue.main.sync { SmoothScroller.canScroll(pid: pid, view: view) }
+                    func glide(_ dy: CGFloat) {
+                        for _ in 0..<10 { DispatchQueue.main.sync { _ = SmoothScroller.post(-dy / 10, pid: pid, view: view) }; usleep(16_000) }
+                        usleep(300_000)
+                    }
+                    glide(-150)
+                    let f1 = self.grabber.elementFrame(el)
+                    glide(150)
+                    let f2 = self.grabber.elementFrame(el)
+                    let m = CGEvent(source: nil)?.location ?? .zero
+                    Log.write("scroll-test: mouse \(m) view \(view) owner \(DispatchQueue.main.sync { SmoothScroller.windowOwner(at: m) } ?? -1) pid \(pid)")
+                    Log.write("scroll-test: can scroll \(ok), y \(Int(f0.minY)) → \(f1.map { Int($0.minY) } ?? -1) → \(f2.map { Int($0.minY) } ?? -1)")
+                }
             case "--marker-looks":
                 // Shows and photographs the marker in each style/colour (nothing saved).
                 let dir = URL(fileURLWithPath: value)
