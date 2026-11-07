@@ -783,6 +783,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     Log.write("scroll-test: mouse \(m) view \(view) owner \(DispatchQueue.main.sync { SmoothScroller.windowOwner(at: m) } ?? -1) pid \(pid)")
                     Log.write("scroll-test: can scroll \(ok), y \(Int(f0.minY)) → \(f1.map { Int($0.minY) } ?? -1) → \(f2.map { Int($0.minY) } ?? -1)")
                 }
+            case "--room-test":
+                // "App|needle": the chain of boxes above that text (to find the
+                // scrolling content's true height).
+                DispatchQueue.global().async {
+                    let parts = value.components(separatedBy: "|")
+                    guard let el = self.grabber.findText(inApp: parts[0], needle: parts[1]) else { Log.write("room-test: no text"); return }
+                    Log.write("room-test: visible \(self.grabber.visibleFrame(of: el).map { "\($0)" } ?? "?")")
+                    for line in self.grabber.lastTexts(near: el, count: 25) { Log.write("room-test: \(line)") }
+                    if let v = self.grabber.visibleFrame(of: el) ?? nil {
+                        let t = Date()
+                        let web = self.grabber.webAreaFrame(of: el) ?? v
+                        Log.write("room-test: page bottom below \(web): \(self.grabber.pageBottom(from: el, below: web, column: self.grabber.elementFrame(el).map { $0.minX...$0.maxX }).map { "\($0)" } ?? "none") in \(Int(Date().timeIntervalSince(t) * 1000)) ms")
+                    }
+                }
             case "--marker-looks":
                 // Shows and photographs the marker in each style/colour (nothing saved).
                 let dir = URL(fileURLWithPath: value)

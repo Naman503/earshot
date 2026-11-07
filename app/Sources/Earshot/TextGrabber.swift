@@ -30,9 +30,9 @@ protocol WordLocator: AnyObject, Sendable {
     var debugView: String { get }
     /// The visible part of the page (top-left screen coordinates).
     func visibleArea() -> CGRect?
-    /// Where the last text this locator knows of is on screen: the page can't
-    /// usefully scroll further than bringing it into view.
-    func textEndBox() -> CGRect?
+    /// The bottom of the lowest text on the whole page that lies below the
+    /// visible area (nil when nothing is below: the page's end is in view).
+    func pageBottom(below view: CGRect) -> CGFloat?
     /// Scrolls the page so the last word found stays comfortably in view.
     /// Returns true when it scrolled.
     func scrollToKeepVisible() -> Bool
@@ -1067,6 +1067,82 @@ final class TextGrabber {
 extension TextGrabber {
     func elementFrame(_ el: AXUIElement) -> CGRect? { frame(el) }
 
+    /// The bottom of the lowest page text below `view` (the app reports text
+    /// boxes unclipped, so text scrolled out of sight still has its true
+    /// place). Walks the page from its end backwards and stops once it's back
+    /// in the upper half of the view, so it only looks at the last stretch.
+    func pageBottom(from el: AXUIElement, below view: CGRect, column: ClosedRange<CGFloat>? = nil) -> CGFloat? {
+        var web: AXUIElement? = el
+        while let w = web, role(w) != "AXWebArea" { web = attr(w, kAXParentAttribute).map { $0 as! AXUIElement } }
+        guard let root = web else { return nil }
+        var lowest: CGFloat?
+        var done = false
+        var seen = 0
+        var upper = 0
+        func walk(_ e: AXUIElement, depth: Int) {
+            guard !done, depth < 80, seen < 3000 else { return }
+            seen += 1
+            if role(e) == "AXStaticText" {
+                let len = ((string(e, kAXValueAttribute) ?? "") as NSString).length
+                guard len > 0, let b = textBounds(e, NSRange(location: 0, length: len)) ?? frame(e) else { return }
+                if let c = column, b.maxX < c.lowerBound - 40 || b.minX > c.upperBound + 40 { return }  // another column
+                if b.maxY > view.maxY + 2 { lowest = max(lowest ?? 0, b.maxY) }
+                // Several texts in a row back up in the page: nothing lower is
+                // left (one alone could be a header or overlay out of order).
+                if b.maxY < view.midY { upper += 1; if upper >= 5 { done = true } } else { upper = 0 }
+                return
+            }
+            for c in children(e).reversed() { walk(c, depth: depth + 1) }
+        }
+        walk(root, depth: 0)
+        return lowest
+    }
+
+    func webAreaFrame(of el: AXUIElement) -> CGRect? {
+        var web: AXUIElement? = el
+        while let w = web, role(w) != "AXWebArea" { web = attr(w, kAXParentAttribute).map { $0 as! AXUIElement } }
+        return web.flatMap { frame($0) }
+    }
+
+    /// Debug: the last texts in the page (document order) with their real
+    /// (unclipped) text boxes.
+    func lastTexts(near el: AXUIElement, count: Int) -> [String] {
+        var web: AXUIElement? = el
+        while let w = web, role(w) != "AXWebArea" { web = attr(w, kAXParentAttribute).map { $0 as! AXUIElement } }
+        guard let root = web else { return ["no web area"] }
+        var texts: [AXUIElement] = []
+        func walk(_ e: AXUIElement, depth: Int) {
+            guard depth < 80, texts.count < 20000 else { return }
+            if role(e) == "AXStaticText" { texts.append(e); return }
+            for c in children(e) { walk(c, depth: depth + 1) }
+        }
+        walk(root, depth: 0)
+        return texts.suffix(count).map { t in
+            let v = string(t, kAXValueAttribute) ?? ""
+            let b = textBounds(t, NSRange(location: 0, length: (v as NSString).length))
+            return "\(b.map { "\($0)" } ?? "?") frame \(frame(t).map { "\($0)" } ?? "?") “\(v.prefix(40))”"
+        } + ["\(texts.count) texts in all"]
+    }
+
+    /// Debug: role, subrole and frame of each ancestor.
+    func ancestorChain(_ el: AXUIElement) -> [String] {
+        var out: [String] = []
+        var cur: AXUIElement? = el
+        while let c = cur, out.count < 40 {
+            let r = role(c) ?? "?"
+            let sub = string(c, kAXSubroleAttribute) ?? ""
+            let names = (try? { () -> [String] in
+                var n: CFArray?
+                AXUIElementCopyAttributeNames(c, &n)
+                return (n as? [String]) ?? []
+            }()) ?? []
+            let scrolly = names.filter { $0.lowercased().contains("scroll") }
+            out.append("\(r)/\(sub) \(frame(c).map { "\($0)" } ?? "?") \(scrolly)")
+            cur = attr(c, kAXParentAttribute).map { $0 as! AXUIElement }
+        }
+        return out
+    }
+
     /// The app's own "scroll this into view" (as screen readers use it).
     func scrollIntoView(_ el: AXUIElement) -> Bool {
         AXUIElementPerformAction(el, "AXScrollToVisible" as CFString) == .success
@@ -1122,21 +1198,16 @@ final class TextRunLocator: WordLocator, @unchecked Sendable {
     /// "scroll into view", which handles nested scroll areas like Claude's docs.
     func visibleArea() -> CGRect? { viewport() }
 
-    func textEndBox() -> CGRect? {
-        guard loaded else { return nil }
-        // The last word of the last stretch of text.
-        for run in runs.reversed() where run.length > 0 {
-            var last: NSRange?
-            text.enumerateSubstrings(in: NSRange(location: run.start, length: run.length), options: [.byWords, .reverse]) { _, r, _, stop in
-                last = r; stop.pointee = true
-            }
-            if let r = last, let b = box(for: r) { return b }
-        }
-        return nil
+    func pageBottom(below view: CGRect) -> CGFloat? {
+        guard loaded, let el = runs.last?.element else { return nil }
+        // The reading's own column, so side panels and pop-ups don't count.
+        let current = lastRange.flatMap { r in runs.first { NSMaxRange(r) > $0.start && r.location < $0.start + $0.length } }
+        let column = (current?.element).flatMap { grabber.elementFrame($0) } ?? grabber.elementFrame(el)
+        return grabber.pageBottom(from: el, below: view, column: column.map { $0.minX...$0.maxX })
     }
 
     var debugView: String {
-        "visible area \(viewport().map { "\($0)" } ?? "unknown"), last word \(lastRange.flatMap { box(for: $0) }.map { "\($0)" } ?? "none"), text ends at \(textEndBox().map { "\($0)" } ?? "?")"
+        "visible area \(viewport().map { "\($0)" } ?? "unknown"), last word \(lastRange.flatMap { box(for: $0) }.map { "\($0)" } ?? "none")"
     }
 
     func scrollToKeepVisible() -> Bool {

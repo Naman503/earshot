@@ -109,7 +109,9 @@ final class HUD {
     /// The highlight rides with the page step by step, so it never lags behind.
     /// If the spoken word is out of sight (you scrolled away), it glides back
     /// so the word sits a third of the way down.
-    private func follow(_ box: CGRect, in view: CGRect, textEnd: CGRect? = nil) {
+    /// `pageEnd`: nil = not measured; .some(nil) = no text below the window
+    /// (the page's end is in view); .some(y) = the lowest text below it ends at y.
+    private func follow(_ box: CGRect, in view: CGRect, textEnd pageEnd: CGFloat?? = nil) {
         guard let locator = lastLocator, !scroller.isBusy else { return }
         learnLineGap(box)
         let gap = lineGap ?? max(box.height * 1.6, 18)
@@ -138,14 +140,13 @@ final class HUD {
             dy = box.midY - (view.minY + view.height * settings.autoScrollReturn)
         } else {
             var want = min(gap * CGFloat(settings.autoScrollLines), view.height * 0.7)
-            // Never past the end: at most until the page's last text sits a
-            // line above the bottom of the window.
-            if let end = textEnd {
-                let room = end.maxY + gap - view.maxY
-                if room < want {
-                    want = room
-                    if want < gap * 0.75 { return }  // the end of the page is already in view
-                }
+            // Never past the end of the page: the full glide while there's
+            // page text below the window, as far as that text goes when it's
+            // less, and none once the page's end is already on screen.
+            if let measured = pageEnd {
+                guard let bottom = measured else { return }
+                want = min(want, bottom - view.maxY + gap)
+                if want < gap * 0.75 { return }
             }
             dy = want
         }
@@ -394,7 +395,9 @@ final class HUD {
             let view = box != nil && mayScroll ? locator.visibleArea() : nil
             // Near the bottom: where the page's text ends, so a glide never asks
             // for more than the page can move.
-            let end = view.flatMap { v in box.flatMap { $0.maxY > v.midY ? locator.textEndBox() : nil } }
+            let nearEnd = view.flatMap { v in box.map { $0.maxY > v.midY } } ?? false
+            let bottom = nearEnd ? view.flatMap { locator.pageBottom(below: $0) } : nil
+            let end: CGFloat?? = nearEnd ? .some(bottom) : .none
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     self.busy = false
