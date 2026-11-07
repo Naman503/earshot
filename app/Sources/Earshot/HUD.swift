@@ -145,8 +145,9 @@ final class HUD {
         stats.scrolled += 1
         let startY = box.midY
         gliding = true
+        beginTracking(locator, glide: true, dir: dy > 0 ? 1 : -1)
         scroller.scroll(by: dy, pid: locator.pid, view: view, duration: duration, easing: settings.autoScrollEasing, step: { [weak self] delta, _ in
-            self?.marker.shift(by: delta)  // the highlight moves with the page, in the same step
+            self?.trackMoved(delta)  // the highlight moves with the page, in the same step
         }, done: { [weak self] in
             // Apps like Claude report where text is a beat after it moves, so
             // wait for the page to settle before measuring again. Until then
@@ -157,7 +158,9 @@ final class HUD {
                 let now = locator.remeasure()
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
+                        guard self.gliding else { return }  // already settled (the page stopped early)
                         self.gliding = false
+                        self.tracking = nil
                         defer { self.findNext() }
                         guard let now else { return }
                         let moved = startY - now.midY
@@ -239,59 +242,116 @@ final class HUD {
 
     private var lastView: CGRect?
 
-    // One stretch of your scrolling (fingers plus the coast after).
-    private var burstAt = Date.distantPast
-    private var burstShift: CGFloat = 0
-    private var burstStartY: CGFloat?
-    private var burstFrozen = false
-    private var burstProbed = false
     /// The direction the page couldn't move last time (+1 content up = at the
     /// bottom, -1 = at the top, 0 = free).
     private var scrollEdge = 0
 
-    /// Moves the highlight with your scroll, but only while the page really
-    /// moves: at the end of a page your swipes still arrive though the text
-    /// stays put. A quick check early in each swipe tells the two apart; at
-    /// an end the highlight stays on its word.
-    private func followUserScroll(_ dy: CGFloat) {
-        guard dy != 0 else { return }
-        let dir = dy > 0 ? 1 : -1
-        if Date().timeIntervalSince(burstAt) > 0.25 || (burstShift != 0 && (burstShift > 0) != (dy > 0)) {
-            // A new swipe (or a change of direction).
-            burstShift = 0
-            burstProbed = false
-            burstStartY = marker.currentRect?.midY
-            burstFrozen = scrollEdge == dir  // it was stuck this way: wait for proof it moves
+    /// The highlight riding along with a moving page — your swipe or an
+    /// Earshot glide. It moves by each scroll step at once (the app reports
+    /// text positions only a beat later), while a check ten times a second
+    /// confirms the text really is moving. When the page stops (its end, part
+    /// way through a swipe or glide), the highlight stops too and settles on
+    /// its word instead of drifting off up or down.
+    private struct Tracking {
+        let locator: WordLocator
+        let glide: Bool
+        let dir: Int
+        let startY: CGFloat
+        var sent: CGFloat = 0
+        var frozen: Bool
+        var last = Date()
+        /// (moved so far as measured, sent so far when measured), newest last.
+        var probes: [(moved: CGFloat, sent: CGFloat)] = []
+    }
+    private var tracking: Tracking?
+    private var trackTimer: Timer?
+
+    private func beginTracking(_ locator: WordLocator, glide: Bool, dir: Int) {
+        guard let y = marker.currentRect?.midY else { tracking = nil; return }
+        // Stuck this way last time: hold still until a check shows it moves.
+        tracking = Tracking(locator: locator, glide: glide, dir: dir, startY: y, frozen: scrollEdge == dir)
+        guard trackTimer == nil else { return }
+        let t = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.probeTracking() }
         }
-        burstAt = Date()
-        burstShift += dy
-        if !burstFrozen { marker.shift(by: dy) }
-        guard !burstProbed, abs(burstShift) >= 20, let startY = burstStartY, let locator = lastLocator else { return }
-        burstProbed = true
-        let sent = burstShift
-        finder.asyncAfter(deadline: .now() + 0.18) {
+        RunLoop.main.add(t, forMode: .common)
+        trackTimer = t
+    }
+
+    private func trackMoved(_ dy: CGFloat) {
+        guard var t = tracking else { marker.shift(by: dy); return }
+        t.sent += dy
+        t.last = Date()
+        if !t.frozen { marker.shift(by: dy) }
+        tracking = t
+    }
+
+    private var probing = false
+    private func probeTracking() {
+        guard let t = tracking else { trackTimer?.invalidate(); trackTimer = nil; return }
+        // Your swipe has ended (no steps for a while): the settle check takes over.
+        if !t.glide, Date().timeIntervalSince(t.last) > 0.4 { tracking = nil; return }
+        guard !probing else { return }
+        probing = true
+        let locator = t.locator
+        let sentNow = t.sent
+        finder.async {
             let now = locator.remeasure()
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    guard let now, self.lastLocator === locator else { return }
-                    let moved = startY - now.midY
-                    if abs(moved) < abs(sent) * 0.3 {
-                        // The page isn't moving this way: hold the highlight on the word.
-                        self.scrollEdge = dir
-                        self.burstFrozen = true
-                        if self.sourceInFront { self.marker.show(now) }
-                    } else {
-                        self.scrollEdge = 0
-                        if self.burstFrozen {
-                            // It moves after all (new text arrived): follow again from here.
-                            self.burstFrozen = false
+                    self.probing = false
+                    guard let now, var t = self.tracking, t.locator === locator else { return }
+                    let moved = t.startY - now.midY
+                    t.probes.append((moved, sentNow))
+                    if t.probes.count > 4 { t.probes.removeFirst() }
+                    let p = t.probes
+                    if t.frozen {
+                        // New text arrived, or the page frees up: follow again from here.
+                        if p.count >= 2, abs(p[p.count - 1].moved - p[p.count - 2].moved) > 4 {
+                            t.frozen = false
+                            self.scrollEdge = 0
                             if self.sourceInFront { self.marker.show(now) }
                         }
+                    } else if p.count >= 3 {
+                        // Three checks in a row where the text didn't budge while
+                        // steps kept coming: the page has stopped.
+                        let a = p[p.count - 3], b = p[p.count - 1]
+                        let stalled = abs(b.moved - a.moved) < 2 && abs(b.sent - a.sent) > 8
+                        let behind = abs(sentNow) - abs(moved) > 12
+                        if stalled, behind {
+                            t.frozen = true
+                            self.scrollEdge = t.dir
+                            if self.sourceInFront { self.marker.show(now) }
+                            if t.glide { self.endGlideEarly(locator, moved: moved) }
+                        }
                     }
+                    if self.tracking != nil { self.tracking = t }
                 }
             }
         }
     }
+
+    /// The page stopped part way through a glide (its end): stop sending steps
+    /// and carry on reading.
+    private func endGlideEarly(_ locator: WordLocator, moved: CGFloat) {
+        scroller.cancel()
+        Log.write("highlight: page stopped after \(Int(moved)) px — glide ended there")
+        pageStuck = true
+        gliding = false
+        tracking = nil
+        findNext()
+    }
+
+    private func followUserScroll(_ dy: CGFloat) {
+        guard dy != 0, let locator = lastLocator else { return }
+        let dir = dy > 0 ? 1 : -1
+        if tracking == nil || tracking?.glide == true || tracking?.dir != dir {
+            if tracking?.glide == true { scroller.cancel(); gliding = false }  // you took over
+            beginTracking(locator, glide: false, dir: dir)
+        }
+        trackMoved(dy)
+    }
+
     private var settleAfterScroll: DispatchWorkItem?
 
     private func remeasureMarker() {
@@ -355,6 +415,7 @@ final class HUD {
         lastLocator = nil
         pageStuck = false
         lastView = nil
+        tracking = nil
         scrollEdge = 0
         lineGap = nil
         lastLineY = nil
