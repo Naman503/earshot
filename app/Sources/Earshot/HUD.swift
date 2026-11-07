@@ -41,8 +41,8 @@ final class HUD {
         // While you scroll or drag a window, the marker stays on the word that
         // was being read and moves with the page, so you can scroll back to it;
         // reading carries on, and the marker catches up when you stop.
-        scrollMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.scrollWheel, .leftMouseDragged]) { [weak self] _ in
-            MainActor.assumeIsolated { self?.pageMoved() }
+        scrollMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.scrollWheel, .leftMouseDragged]) { [weak self] e in
+            MainActor.assumeIsolated { self?.pageMoved(e) }
         }
         // Paging with the keyboard (Page Up/Down, arrows, Space, Home/End) is you
         // moving the page too: auto-scroll waits.
@@ -101,12 +101,36 @@ final class HUD {
     private var scrollEnd: DispatchWorkItem?
     private var lastFollow = Date.distantPast
 
+    private let scroller = SmoothScroller()
+
+    /// Teleprompter-style following: keep the spoken line at a set height in
+    /// the window. When the voice moves to a lower line, the page glides up by
+    /// the difference (a line at a time while reading); when the word is above
+    /// the window, it glides down to it.
+    private func follow(_ box: CGRect, in view: CGRect) {
+        let target = view.minY + view.height * settings.autoScrollAnchor
+        let dy = box.midY - target
+        let below = dy > box.height * 0.8
+        let above = box.minY < view.minY + 4
+        guard below || above, !scroller.isBusy || abs(dy) > view.height * 0.5 else { return }
+        lastAutoScroll = Date()
+        stats.scrolled += 1
+        let duration = min(0.6, 0.22 + abs(dy) / 3000)
+        // Aim the scroll at a point inside the window even when the word is off-screen.
+        let at = CGPoint(x: min(max(box.midX, view.minX + 20), view.maxX - 20), y: view.midY)
+        scroller.scroll(by: dy, at: at, duration: duration) { [weak self] step in
+            self?.marker.shift(by: step)  // the highlight rides along with the text
+        }
+    }
+
     /// When you last scrolled or paged yourself (auto-scroll waits after it).
     private var lastUserScroll = Date.distantPast
     private var lastAutoScroll = Date.distantPast
     private var keyMonitor: Any?
 
-    private func pageMoved() {
+    private func pageMoved(_ e: NSEvent) {
+        // Earshot's own smooth scrolling isn't you taking over.
+        if e.cgEvent?.getIntegerValueField(.eventSourceUserData) == SmoothScroller.tag { return }
         lastUserScroll = Date()
         scrollEnd?.cancel()
         let end = DispatchWorkItem { [weak self] in
@@ -138,20 +162,20 @@ final class HUD {
         busy = true
         // Follow the reading by scrolling — unless you're scrolling (or paged)
         // yourself recently, the app isn't in front, or it scrolled just now.
-        let mayScroll = settings.autoScroll && settings.highlightWords && sourceInFront
-            && Date().timeIntervalSince(lastUserScroll) > settings.autoScrollPause
-            && Date().timeIntervalSince(lastAutoScroll) > 0.8
+        let userRecently = Date().timeIntervalSince(lastUserScroll) <= settings.autoScrollPause
+        if settings.autoScroll, userRecently { stats.waitedForYou += 1 }
+        let mayScroll = settings.autoScroll && settings.highlightWords && sourceInFront && !userRecently
+
         finder.async {
-            var box = locator.locate(word, next: next)
-            if box != nil, mayScroll, locator.scrollToKeepVisible() {
-                DispatchQueue.main.async { MainActor.assumeIsolated { self.lastAutoScroll = Date(); self.stats.scrolled += 1 } }
-                usleep(250_000)  // let the page settle, then measure the word again
-                box = locator.remeasure() ?? box
-            }
+            let box = locator.locate(word, next: next)
+            let view = box != nil && mayScroll ? locator.visibleArea() : nil
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     self.busy = false
-                    if let box { self.place(box) } else { self.stats.missed += 1; self.missed() }
+                    if let box {
+                        self.place(box)
+                        if let view { self.follow(box, in: view) }
+                    } else { self.stats.missed += 1; self.missed() }
                     self.findNext()
                 }
             }
@@ -165,12 +189,13 @@ final class HUD {
     }
 
     /// Per reading, for the log: words placed, not found, hidden (app not in front).
-    private var stats = (placed: 0, missed: 0, hidden: 0, scrolled: 0)
+    private var stats = (placed: 0, missed: 0, hidden: 0, scrolled: 0, waitedForYou: 0)
 
     private func hideWord() {
         if stats.placed + stats.missed + stats.hidden + stats.scrolled > 0 {
-            Log.write("highlight: \(stats.placed) words shown, \(stats.missed) not found, \(stats.hidden) hidden (other app in front), \(stats.scrolled) auto-scrolls")
-            stats = (0, 0, 0, 0)
+            Log.write("highlight: \(stats.placed) words shown, \(stats.missed) not found, \(stats.hidden) hidden (other app in front), \(stats.scrolled) auto-scrolls (\(stats.waitedForYou) words while you were scrolling)")
+            if let v = lastLocator?.debugView { Log.write("highlight: \(v)") }
+            stats = (0, 0, 0, 0, 0)
         }
         pending = nil
         lastLocator = nil
@@ -425,6 +450,17 @@ final class WordMarker {
     private var underlineHeight: CGFloat = 3
     private var tintColor: NSColor?
 
+    /// Moves the marker up by `dy` points (as the page scrolls under it).
+    func shift(by dy: CGFloat) {
+        guard visible else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        fill.frame.origin.y += dy
+        underline.frame.origin.y += dy
+        CATransaction.commit()
+        lastRect = lastRect?.offsetBy(dx: 0, dy: -dy)
+    }
+
     /// Debug: what the marker window is doing.
     var debugState: String {
         guard let w = window else { return "no window yet" }
@@ -491,5 +527,46 @@ final class WordMarker {
     private func topLeftFrame(_ s: NSScreen) -> CGRect {
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
         return CGRect(x: s.frame.minX, y: primaryHeight - s.frame.maxY, width: s.frame.width, height: s.frame.height)
+    }
+}
+
+/// Scrolls the app under a point smoothly, like a trackpad: many small pixel
+/// scroll steps over a short time with ease-in-out, tagged so Earshot's own
+/// scroll watcher can tell them from yours.
+@MainActor
+final class SmoothScroller {
+    static let tag: Int64 = 0x4541_5253  // "EARS"
+    private var timer: Timer?
+    private(set) var isBusy = false
+
+    /// `dy` > 0 moves the content up (shows what's below).
+    func scroll(by dy: CGFloat, at point: CGPoint, duration: Double, step: @escaping (CGFloat) -> Void) {
+        timer?.invalidate()
+        let start = Date()
+        var sent: CGFloat = 0
+        isBusy = true
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 120, repeats: true) { [weak self] t in
+            MainActor.assumeIsolated {
+                let p = min(1, Date().timeIntervalSince(start) / duration)
+                let eased = p < 0.5 ? 4 * p * p * p : 1 - pow(-2 * p + 2, 3) / 2
+                let goal = (dy * eased).rounded()
+                let delta = goal - sent
+                if delta != 0 {
+                    Self.post(-delta, at: point)
+                    sent = goal
+                    step(delta)
+                }
+                if p >= 1 { t.invalidate(); self?.isBusy = false }
+            }
+        }
+    }
+
+    private static func post(_ pixels: CGFloat, at point: CGPoint) {
+        guard let e = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
+                              wheel1: Int32(pixels), wheel2: 0, wheel3: 0) else { return }
+        e.location = point
+        e.setIntegerValueField(.eventSourceUserData, value: tag)
+        e.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)  // trackpad-style: apps don't add their own animation
+        e.post(tap: .cghidEventTap)
     }
 }

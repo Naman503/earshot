@@ -921,7 +921,11 @@ private struct HighlightTab: View {
             }
             .disabled(!settings.highlightWords)
             Section {
-                Toggle("Scroll to keep the spoken word in view", isOn: $settings.autoScroll)
+                Toggle("Scroll smoothly to keep the spoken line in view", isOn: $settings.autoScroll)
+                Picker("Keep the spoken line", selection: $settings.autoScrollAnchor) {
+                    ForEach([0.2, 0.3, 0.4, 0.5], id: \.self) { Text("\(Int($0 * 100))% from the top").tag($0) }
+                }
+                .disabled(!settings.autoScroll)
                 Picker("After you scroll yourself, wait", selection: $settings.autoScrollPause) {
                     ForEach([2.0, 3, 5, 10, 20], id: \.self) { Text("\(Int($0)) seconds").tag($0) }
                 }
@@ -929,7 +933,7 @@ private struct HighlightTab: View {
             } header: {
                 Text("Follow along")
             } footer: {
-                Text("When the spoken word nears the bottom of the window, the page scrolls so it sits about a third of the way down. Scroll or page yourself and it leaves the page alone; once you stop for the time above, it brings the spoken word back into view.")
+                Text("Like a teleprompter: the line being read stays at the height above, and the page glides up a line at a time as the voice moves on. Scroll or page yourself and it leaves the page alone; once you stop for the time above, it glides back to the spoken line.")
                     .font(.caption)
             }
             .disabled(!settings.highlightWords)

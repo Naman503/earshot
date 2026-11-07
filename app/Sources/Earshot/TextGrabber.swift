@@ -26,6 +26,10 @@ protocol WordLocator: AnyObject, Sendable {
     func remeasure() -> CGRect?
     /// The app the words are in (the marker only shows while it's in front).
     var pid: pid_t { get }
+    /// Debug: the visible area and the last word's box.
+    var debugView: String { get }
+    /// The visible part of the page (top-left screen coordinates).
+    func visibleArea() -> CGRect?
     /// Scrolls the page so the last word found stays comfortably in view.
     /// Returns true when it scrolled.
     func scrollToKeepVisible() -> Bool
@@ -1112,6 +1116,12 @@ final class TextRunLocator: WordLocator, @unchecked Sendable {
     /// bring a line further on into view (it scrolls just enough to show it), so
     /// the spoken word lands about a third of the way down. Uses the app's own
     /// "scroll into view", which handles nested scroll areas like Claude's docs.
+    func visibleArea() -> CGRect? { viewport() }
+
+    var debugView: String {
+        "visible area \(viewport().map { "\($0)" } ?? "unknown"), last word \(lastRange.flatMap { box(for: $0) }.map { "\($0)" } ?? "none")"
+    }
+
     func scrollToKeepVisible() -> Bool {
         guard loaded, let range = lastRange, let box = box(for: range), let view = viewport(), view.height > 80,
               let i = runs.firstIndex(where: { NSMaxRange(range) > $0.start && range.location < $0.start + $0.length }) else { return false }

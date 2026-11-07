@@ -41,6 +41,8 @@ final class Settings: ObservableObject {
     @Published var autoScroll: Bool { didSet { save("autoScroll", autoScroll) } }
     /// Seconds to wait after you scroll before following again.
     @Published var autoScrollPause: Double { didSet { save("autoScrollPause", autoScrollPause) } }
+    /// Where the spoken line is kept, as a share of the window height from the top.
+    @Published var autoScrollAnchor: Double { didSet { save("autoScrollAnchor", autoScrollAnchor) } }
     /// Say IDs, hashes, addresses, keys and long numbers briefly.
     @Published var shortenIDs: Bool { didSet { save("shortenIDs", shortenIDs) } }
     /// Stop the voice engine (freeing ~0.8 GB) after this many idle minutes.
@@ -155,6 +157,7 @@ final class Settings: ObservableObject {
         highlightWordsInBar = d.object(forKey: "highlightWordsInBar") as? Bool ?? false
         autoScroll = d.object(forKey: "autoScroll") as? Bool ?? true
         autoScrollPause = d.object(forKey: "autoScrollPause") as? Double ?? 3
+        autoScrollAnchor = d.object(forKey: "autoScrollAnchor") as? Double ?? 0.2
         let style = d.string(forKey: "highlightStyle").flatMap(HighlightStyle.init) ?? .soft
         highlightStyle = style
         // Soft (the original look) used the accent colour; bold defaults to yellow.
