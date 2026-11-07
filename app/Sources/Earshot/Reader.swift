@@ -110,6 +110,9 @@ final class Reader: ObservableObject {
         var index: Int
         var paused: Bool
         var technical: [Bool] = []
+        /// The page the reading came from, so the word highlight carries on after.
+        var locator: WordLocator?
+        var paragraphOf: [Int] = []
     }
 
     /// Reads `raw` aloud. `quiet` skips the on-screen "connect headphones"
@@ -174,12 +177,18 @@ final class Reader: ObservableObject {
     /// Captures the current reading so it can be resumed after an interruption.
     func snapshot() -> Snapshot? {
         guard isActive, !chunks.isEmpty else { return nil }
-        return Snapshot(chunks: chunks, index: index, paused: state == .paused, technical: technical)
+        return Snapshot(chunks: chunks, index: index, paused: state == .paused, technical: technical,
+                        locator: locator, paragraphOf: paragraphOf)
     }
 
     func restore(_ s: Snapshot) {
         technical = s.technical
         guard start(s.chunks, at: s.index, quiet: true, onFinish: nil) else { return }
+        // Back to the page: the word highlight picks up where it left off.
+        locator = s.locator
+        paragraphOf = s.paragraphOf
+        startWordTracking()
+        Log.write("read: resumed at sentence \(s.index + 1) of \(s.chunks.count)\(s.locator != nil ? ", with highlight" : "")")
         if s.paused { togglePause() }
     }
 

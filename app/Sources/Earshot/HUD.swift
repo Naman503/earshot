@@ -315,7 +315,13 @@ final class HUD {
 
     private func place(_ rect: CGRect) {
         missedSince = nil
-        guard sourceInFront else { stats.hidden += 1; marker.hide(); return }
+        guard sourceInFront else {
+            if stats.hidden == 0 {
+                let front = NSWorkspace.shared.frontmostApplication
+                Log.write("highlight: hidden — \(front?.localizedName ?? "?") (pid \(front?.processIdentifier ?? 0)) is in front, the text is in pid \(lastLocator?.pid ?? 0)")
+            }
+            stats.hidden += 1; marker.hide(); return
+        }
         stats.placed += 1
         marker.tint(for: reader.speedMode, normal: settings.highlightColor.color, style: settings.highlightStyle)
         marker.show(rect)
