@@ -962,19 +962,27 @@ final class TextGrabber {
         let r = role(hit) ?? ""
         let big = frame(hit).map { $0.width > 260 && $0.height > 80 } ?? false
         guard r == "AXWebArea" || (r == "AXGroup" && big) || r == "AXScrollArea" else { return hit }
-        var cur = hit
-        for _ in 0..<60 {
-            var best: (AXUIElement, CGFloat)?
-            for c in children(cur) {
-                guard let f = frame(c), f.contains(p), f.width > 0, f.height > 0 else { continue }
-                let area = f.width * f.height
-                if best == nil || area < best!.1 { best = (c, area) }
+        // Search the box for the line of text under the point. Only branches
+        // whose box contains the point are opened, and empty overlays (Claude
+        // lays a transparent one over its doc panel) are skipped.
+        var best: (AXUIElement, CGFloat)?
+        var visited = 0
+        func walk(_ e: AXUIElement) {
+            guard visited < 4000 else { return }
+            visited += 1
+            for c in children(e) {
+                guard let f = frame(c), f.contains(p) else { continue }
+                if string(c, kAXSubroleAttribute) == "AXEmptyGroup" { continue }
+                if role(c) == "AXStaticText" {
+                    let area = f.width * f.height
+                    if best == nil || area < best!.1 { best = (c, area) }
+                } else {
+                    walk(c)
+                }
             }
-            guard let next = best?.0 else { break }
-            cur = next
-            if role(cur) == "AXStaticText" { break }
         }
-        return cur
+        walk(hit)
+        return best?.0 ?? hit
     }
 
     private func attr(_ el: AXUIElement, _ name: String) -> CFTypeRef? {
