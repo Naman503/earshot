@@ -116,3 +116,50 @@ final class Trackpad {
         return 0
     }
 }
+
+/// Watches for the system's desktop-swipe gesture (the Dock handles four-finger
+/// swipes between desktops and sends "dock control" events while the fingers
+/// move). A four-finger tap seen during one is the start of a swipe, not a tap.
+/// Listens only; never blocks or changes an event.
+@MainActor
+final class DockSwipeWatcher {
+    /// When the last stream of desktop-swipe events was seen.
+    private(set) var lastSwipe = Date.distantPast
+    private var recent: [Date] = []
+    private var tap: CFMachPort?
+    private static let dockControl: UInt32 = 30  // kCGSEventDockControl
+
+    func start() {
+        guard tap == nil else { return }
+        let me = Unmanaged.passUnretained(self).toOpaque()
+        tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .tailAppendEventTap, options: .listenOnly,
+                                eventsOfInterest: CGEventMask(1) << CGEventMask(Self.dockControl), callback: { _, type, event, refcon in
+            guard let refcon else { return Unmanaged.passUnretained(event) }
+            let this = Unmanaged<DockSwipeWatcher>.fromOpaque(refcon).takeUnretainedValue()
+            let raw = type.rawValue
+            DispatchQueue.main.async { MainActor.assumeIsolated { this.saw(raw) } }
+            return Unmanaged.passUnretained(event)
+        }, userInfo: me)
+        guard let tap else { Log.write("dock swipes: can't watch (no permission)"); return }
+        CFRunLoopAddSource(CFRunLoopGetMain(), CFMachPortCreateRunLoopSource(nil, tap, 0), .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+    }
+
+    private func saw(_ type: UInt32) {
+        if type == CGEventType.tapDisabledByTimeout.rawValue || type == CGEventType.tapDisabledByUserInput.rawValue {
+            if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+            return
+        }
+        guard type == Self.dockControl else { return }
+        let now = Date()
+        recent = recent.filter { now.timeIntervalSince($0) < 0.6 } + [now]
+        // A swipe streams many of these; a plain tap sends a couple at most.
+        if recent.count >= 4 {
+            if now.timeIntervalSince(lastSwipe) > 1 { Log.write("gesture: desktop swipe in progress") }
+            lastSwipe = now
+        }
+    }
+
+    /// True while a desktop swipe is under way or just finished.
+    var swipingNow: Bool { Date().timeIntervalSince(lastSwipe) < 0.8 }
+}

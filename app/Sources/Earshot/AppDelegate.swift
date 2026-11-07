@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let grabber = TextGrabber()
     let hotKeys = HotKeys()
     let trackpad = Trackpad()
+    let dockSwipes = DockSwipeWatcher()
     private(set) var reader: Reader!
     private(set) var announcer: Announcer!
     let notifications = NotificationWatcher()
@@ -43,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         Log.write("launch \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") ?? "") accessibility=\(AXIsProcessTrusted())")
         watchForStalls()
+        dockSwipes.start()
         // A swipe that switched desktops can register as a tap a moment before
         // the switch: if reading started from a gesture just now, undo it.
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
@@ -83,6 +85,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         trackpad.onGesture = { [weak self] g in
             guard let self, self.settings.gesturesEnabled, let action = self.settings.gestures[g], action != .none else { return }
             // A desktop switch (four-finger swipe) right around it: it was a swipe.
+            if self.dockSwipes.swipingNow {
+                Log.write("gesture: \(g.label) ignored (desktop swipe)")
+                return
+            }
             if Date().timeIntervalSince(self.lastSpaceChange) < 1 {
                 Log.write("gesture: \(g.label) ignored (desktop switch)")
                 return

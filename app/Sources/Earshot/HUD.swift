@@ -144,50 +144,36 @@ final class HUD {
         lastAutoScroll = Date()
         stats.scrolled += 1
         let startY = box.midY
-        var checked = false
-        scroller.scroll(by: dy, pid: locator.pid, view: view, duration: duration, easing: settings.autoScrollEasing, step: { [weak self] delta, sent in
-            guard let self else { return }
-            self.marker.shift(by: delta)  // the highlight moves with the page, in the same step
-            // Early on, make sure the page really is moving (it may be at its end).
-            if !checked, abs(sent) >= min(abs(dy) * 0.25, 40) {
-                checked = true
-                self.verifyGlide(locator, startY: startY, sent: sent)
-            }
+        gliding = true
+        scroller.scroll(by: dy, pid: locator.pid, view: view, duration: duration, easing: settings.autoScrollEasing, step: { [weak self] delta, _ in
+            self?.marker.shift(by: delta)  // the highlight moves with the page, in the same step
         }, done: { [weak self] in
-            // Settle the highlight exactly on the word once the page stops.
+            // Apps like Claude report where text is a beat after it moves, so
+            // wait for the page to settle before measuring again. Until then
+            // the highlight keeps riding with the glide instead of jumping to
+            // a stale spot.
             guard let self else { return }
-            self.finder.asyncAfter(deadline: .now() + 0.05) {
+            self.finder.asyncAfter(deadline: .now() + 0.25) {
                 let now = locator.remeasure()
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
+                        self.gliding = false
+                        defer { self.findNext() }
                         guard let now else { return }
-                        Log.write("highlight: glide \(Int(dy)) px in \(String(format: "%.2f", duration)) s, text moved \(Int(startY - now.midY)) px")
-                        if self.sourceInFront, self.lastLocator === locator, !self.scroller.isBusy { self.marker.show(now) }
+                        let moved = startY - now.midY
+                        Log.write("highlight: glide \(Int(dy)) px in \(String(format: "%.2f", duration)) s, text moved \(Int(moved)) px")
+                        // Moved much less than asked: the page hit its end.
+                        if abs(moved) < abs(dy) * 0.6 { self.pageStuck = true }
+                        if self.sourceInFront, self.lastLocator === locator { self.marker.show(now) }
                     }
                 }
             }
         })
     }
 
-    /// Mid-glide check: if the text hasn't moved, the page can't scroll — stop
-    /// and put the highlight back on the word.
-    private func verifyGlide(_ locator: WordLocator, startY: CGFloat, sent: CGFloat) {
-        finder.asyncAfter(deadline: .now() + 0.05) {
-            let now = locator.remeasure()
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    guard let now else { return }
-                    let moved = startY - now.midY
-                    if abs(moved) < abs(sent) * 0.3 {
-                        self.scroller.cancel()
-                        self.pageStuck = true
-                        if self.sourceInFront, self.lastLocator === locator { self.marker.show(now) }
-                        Log.write("highlight: page didn't scroll (sent \(Int(sent)), moved \(Int(moved)))")
-                    }
-                }
-            }
-        }
-    }
+    /// True from the start of a glide until the page has settled after it;
+    /// words wait meanwhile, so the highlight never jumps to a stale spot.
+    private var gliding = false
 
     /// The distance between lines on this page, learned from the reading.
     private var lineGap: CGFloat?
@@ -223,7 +209,19 @@ final class HUD {
         }
         scrollEnd = end
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: end)
-        // Keep the marker on the last word read as the page moves (~30 times a second).
+        // Your own scroll over the page being read: move the highlight by the
+        // same amount in the same moment (the app reports new text positions
+        // only a beat later), then measure once the page settles.
+        if e.type == .scrollWheel, e.hasPreciseScrollingDeltas, let view = lastView,
+           view.contains(CGEvent(source: nil)?.location ?? .zero), sourceInFront {
+            marker.shift(by: -e.scrollingDeltaY)
+            settleAfterScroll?.cancel()
+            let settle = DispatchWorkItem { [weak self] in self?.remeasureMarker() }
+            settleAfterScroll = settle
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: settle)
+            return
+        }
+        // Otherwise keep the marker on the last word read as the page moves (~30 times a second).
         guard !busy, Date().timeIntervalSince(lastFollow) > 0.033, let locator = lastLocator else { return }
         lastFollow = Date()
         busy = true
@@ -239,8 +237,26 @@ final class HUD {
         }
     }
 
+    private var lastView: CGRect?
+    private var settleAfterScroll: DispatchWorkItem?
+
+    private func remeasureMarker() {
+        guard let locator = lastLocator, !busy else { return }
+        busy = true
+        finder.async {
+            let box = locator.remeasure()
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self.busy = false
+                    if let box, self.sourceInFront, self.lastLocator === locator { self.marker.show(box) }
+                    if self.scrollEnd == nil { self.findNext() }
+                }
+            }
+        }
+    }
+
     private func findNext() {
-        guard !busy, scrollEnd == nil, let (word, next, locator) = pending else { return }
+        guard !busy, !gliding, scrollEnd == nil, let (word, next, locator) = pending else { return }
         pending = nil
         busy = true
         // Follow the reading by scrolling — unless you're scrolling (or paged)
@@ -257,7 +273,7 @@ final class HUD {
                     self.busy = false
                     if let box {
                         self.place(box)
-                        if let view { self.follow(box, in: view) }
+                        if let view { self.lastView = view; self.follow(box, in: view) }
                     } else { self.stats.missed += 1; self.missed() }
                     self.findNext()
                 }
@@ -278,11 +294,13 @@ final class HUD {
         if stats.placed + stats.missed + stats.hidden + stats.scrolled > 0 {
             Log.write("highlight: \(stats.placed) words shown, \(stats.missed) not found, \(stats.hidden) hidden (other app in front), \(stats.scrolled) auto-scrolls (\(stats.waitedForYou) words while you were scrolling)")
             if let v = lastLocator?.debugView { Log.write("highlight: \(v)") }
+            Log.write("highlight: marker \(marker.debugState)")
             stats = (0, 0, 0, 0, 0)
         }
         pending = nil
         lastLocator = nil
         pageStuck = false
+        lastView = nil
         lineGap = nil
         lastLineY = nil
         missedSince = nil
@@ -493,6 +511,14 @@ final class WordMarker {
         }
         layout(local)
         CATransaction.commit()
+        if visible, !w.isVisible || !w.isOnActiveSpace {
+            // The system took the marker window away (sleep, a display or
+            // desktop change) while we thought it was showing: bring it back.
+            Log.write("highlight: marker window was hidden by the system — showing it again")
+            visible = false
+            fill.opacity = 0
+            underline.opacity = 0
+        }
         if !visible {
             w.orderFrontRegardless()
             CATransaction.begin()
