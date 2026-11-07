@@ -5,7 +5,7 @@ import Speech
 import SwiftUI
 
 enum SettingsTab: String, CaseIterable, Identifiable {
-    case howTo, general, voice, reading, gestures, shortcuts, notifications, autoRead, output, media
+    case howTo, general, voice, reading, highlight, gestures, shortcuts, notifications, autoRead, output, media
     var id: String { rawValue }
 
     var title: String {
@@ -14,6 +14,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .general: "General"
         case .voice: "Voice & speed"
         case .reading: "Reading"
+        case .highlight: "Highlight"
         case .gestures: "Trackpad gestures"
         case .shortcuts: "Keyboard shortcuts"
         case .notifications: "Notifications"
@@ -29,6 +30,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .general: "gearshape"
         case .voice: "waveform"
         case .reading: "text.alignleft"
+        case .highlight: "highlighter"
         case .gestures: "hand.tap"
         case .shortcuts: "keyboard"
         case .notifications: "bell.badge"
@@ -44,6 +46,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .general: "Permissions, start at login, engine status"
         case .voice: "Voice, speed and loudness"
         case .reading: "How much a tap reads, what to skip, pronunciations, calls"
+        case .highlight: "The marker that follows each spoken word"
         case .gestures: "What each multi-finger tap does"
         case .shortcuts: "Change any keyboard shortcut"
         case .notifications: "Which notifications are read and how"
@@ -92,6 +95,7 @@ struct SettingsView: View {
         case .general: GeneralTab()
         case .voice: VoiceTab()
         case .reading: ReadingTab()
+        case .highlight: HighlightTab()
         case .gestures: GesturesTab()
         case .shortcuts: ShortcutsTab()
         case .notifications: NotificationsTab()
@@ -680,24 +684,6 @@ private struct ReadingTab: View {
             Section("Feedback") {
                 Toggle("Show the now-reading bar", isOn: $settings.showHUD)
                 Toggle("Outline the text that was picked up", isOn: $settings.highlightSource)
-                Toggle("Highlight each word on the page as it's spoken", isOn: $settings.highlightWords)
-                Picker("Highlight style", selection: $settings.highlightStyle) {
-                    ForEach(HighlightStyle.allCases, id: \.self) { Text($0.title).tag($0) }
-                }
-                Picker("Highlight colour", selection: $settings.highlightColor) {
-                    ForEach(HighlightColor.allCases, id: \.self) { Text($0.title).tag($0) }
-                }
-                Toggle("Also highlight it in the now-reading bar", isOn: $settings.highlightWordsInBar)
-                LabeledContent("Highlight timing") {
-                    HStack {
-                        Text("Earlier").font(.caption).foregroundStyle(.secondary)
-                        Slider(value: $settings.highlightOffset, in: -0.3...0.6, step: 0.05)
-                        Text("Later").font(.caption).foregroundStyle(.secondary)
-                        Text(String(format: "%+.2f s", settings.highlightOffset)).monospacedDigit().frame(width: 56)
-                    }
-                }
-                Text("Short words are lit together with the next one. Works in browsers, Electron apps and Mac text views.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("Calls") {
                 Toggle("Pause reading and hold notifications while another app uses the microphone", isOn: $settings.pauseForCalls)
@@ -830,5 +816,124 @@ private struct GeneralTab: View {
                 Button("Grant…", action: request)
             }
         }
+    }
+}
+
+// MARK: Highlight look
+
+/// Style (Soft / Bold) and colour for the word highlight, with a live preview
+/// drawn the same way as the marker on the page.
+private struct HighlightLookPicker: View {
+    @EnvironmentObject var settings: Settings
+
+    var body: some View {
+        LabeledContent("Highlight style") {
+            Picker("", selection: $settings.highlightStyle) {
+                Text("Soft").tag(HighlightStyle.soft)
+                Text("Bold").tag(HighlightStyle.bold)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 180)
+        }
+        LabeledContent("Highlight colour") {
+            HStack(spacing: 12) {
+                ForEach(HighlightColor.allCases, id: \.self) { c in
+                    swatch(c)
+                }
+            }
+        }
+        VStack(alignment: .leading, spacing: 10) {
+            preview(color: Color(nsColor: settings.highlightColor.color), label: "Normal speed")
+            HStack(spacing: 24) {
+                preview(color: .orange, label: "Fast")
+                preview(color: .teal, label: "Slow")
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func swatch(_ c: HighlightColor) -> some View {
+        let selected = settings.highlightColor == c
+        return Button {
+            settings.highlightColor = c
+        } label: {
+            ZStack {
+                Circle().fill(Color(nsColor: c.color)).frame(width: 22, height: 22)
+                Circle().strokeBorder(Color.primary.opacity(selected ? 0.9 : 0.15), lineWidth: selected ? 2.5 : 1)
+                    .frame(width: 30, height: 30)
+                if selected {
+                    Image(systemName: "checkmark").font(.system(size: 10, weight: .heavy)).foregroundStyle(.white)
+                        .shadow(color: .black.opacity(0.4), radius: 1)
+                }
+            }
+            .frame(width: 30, height: 30)
+            .overlay(alignment: .bottom) {
+                Text(c == .accent ? "System" : c.title)
+                    .font(.system(size: 9.5, weight: selected ? .semibold : .regular))
+                    .foregroundStyle(selected ? .primary : .secondary)
+                    .fixedSize()
+                    .offset(y: 15)
+            }
+            .padding(.bottom, 14)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(c.title)
+        .accessibilityLabel(c.title + (selected ? ", selected" : ""))
+    }
+
+    /// A sample line with one word marked exactly like the page marker.
+    private func preview(color: Color, label: String) -> some View {
+        let bold = settings.highlightStyle == .bold
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 4) {
+                Text("Earshot")
+                Text("follows")
+                    .padding(.horizontal, 3)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(color.opacity(bold ? 0.42 : 0.22)))
+                    .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(color.opacity(bold ? 0.95 : 0), lineWidth: 1.5))
+                    .overlay(alignment: .bottom) {
+                        Capsule().fill(color.opacity(bold ? 1 : 0.95)).frame(height: bold ? 3 : 2.5).padding(.horizontal, 1).offset(y: 2)
+                    }
+                Text("each word")
+            }
+            .font(.system(size: 14))
+            Text(label).font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct HighlightTab: View {
+    @EnvironmentObject var settings: Settings
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Highlight each word on the page as it's spoken", isOn: $settings.highlightWords)
+                Toggle("Also highlight it in the now-reading bar", isOn: $settings.highlightWordsInBar)
+            } footer: {
+                Text("Short words are lit together with the next one. Works in browsers, Electron apps like Claude, and Mac text views.")
+                    .font(.caption)
+            }
+            Section("Look") {
+                HighlightLookPicker()
+            }
+            .disabled(!settings.highlightWords)
+            Section {
+                LabeledContent("Timing") {
+                    HStack {
+                        Text("Earlier").font(.caption).foregroundStyle(.secondary)
+                        Slider(value: $settings.highlightOffset, in: -0.3...0.6, step: 0.05)
+                        Text("Later").font(.caption).foregroundStyle(.secondary)
+                        Text(String(format: "%+.2f s", settings.highlightOffset)).monospacedDigit().frame(width: 56)
+                    }
+                }
+            } footer: {
+                Text("If the marker runs ahead of the voice or behind it, move it here.").font(.caption)
+            }
+            .disabled(!settings.highlightWords)
+        }
+        .formStyle(.grouped)
     }
 }

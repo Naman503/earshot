@@ -748,6 +748,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     }
                     Log.write("follow-test: \(found) found, \(missed) missed")
                 }
+            case "--marker-looks":
+                // Shows and photographs the marker in each style/colour (nothing saved).
+                let dir = URL(fileURLWithPath: value)
+                let looks: [(HighlightStyle, HighlightColor)] = [(.soft, .blue), (.soft, .yellow), (.soft, .accent), (.bold, .yellow), (.bold, .green), (.bold, .pink)]
+                for (i, look) in looks.enumerated() {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1 + Double(i) * 1.2) {
+                        self.hud.testMarkerLook(style: look.0, color: look.1, rect: CGRect(x: 820, y: 560, width: 90, height: 18),
+                                                file: dir.appendingPathComponent("\(i)-\(look.0)-\(look.1).png"))
+                    }
+                }
             case "--marker-variant":
                 // Shows the word marker mid-screen for 4 s with a given window behaviour.
                 let variants: [String: NSWindow.CollectionBehavior] = [

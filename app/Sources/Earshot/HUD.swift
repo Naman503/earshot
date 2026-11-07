@@ -199,6 +199,27 @@ final class HUD {
 
     /// Debug: shows the word marker over `rect` (to check it's visible).
     func testMarker(_ rect: CGRect) { marker.show(rect) }
+
+    /// Debug: shows the marker with a given look (not saved) and photographs it.
+    func testMarkerLook(style: HighlightStyle, color: HighlightColor, rect: CGRect, file: URL) {
+        marker.show(rect)
+        marker.tint(for: .normal, normal: color.color, style: style)
+        marker.show(rect)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            Task {
+                guard let content = try? await SCShareableContent.current, let d = content.displays.first else { return }
+                let config = SCStreamConfiguration()
+                config.sourceRect = rect.insetBy(dx: -40, dy: -14)
+                config.width = Int(config.sourceRect.width * 2)
+                config.height = Int(config.sourceRect.height * 2)
+                if let img = try? await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(display: d, excludingWindows: []), configuration: config) {
+                    try? NSBitmapImageRep(cgImage: img).representation(using: .png, properties: [:])?.write(to: file)
+                }
+                Log.write("marker-look: \(style) \(color) — \(self.marker.debugState)")
+                self.marker.hide()
+            }
+        }
+    }
     func testMarkerHide() { marker.hide() }
 
     /// Outlines `rect` (top-left screen coordinates) for a moment.
@@ -430,9 +451,9 @@ final class WordMarker {
             w.collectionBehavior = HUD.overlayBehavior
             let v = NSView()
             v.wantsLayer = true
-            fill.backgroundColor = NSColor.systemYellow.withAlphaComponent(0.42).cgColor
+            // Colours come from tint(for:) only — setting a default here used to
+            // overwrite the chosen colour the first time the window was made.
             fill.opacity = 0
-            underline.backgroundColor = NSColor.systemYellow.cgColor
             underline.cornerRadius = 1.5
             underline.opacity = 0
             v.layer?.addSublayer(fill)
