@@ -356,10 +356,15 @@ final class TextGrabber {
             guard visited < 12000 else { return }
             visited += 1
             let r = role(e) ?? ""
-            if startAt == nil, current == nil, CFEqual(e, el) || (skip.contains(r) && chain.contains { CFEqual($0, e) }) {
+            // An editable area holding the tapped text is what's being read (a
+            // document editor, like Claude's doc panel): go into it. Other text
+            // boxes (a message being typed) and controls are skipped.
+            let editable = r == "AXTextArea" || r == "AXTextField"
+            let holdsTap = (skip.contains(r) || editable) && chain.contains { CFEqual($0, e) }
+            if startAt == nil, current == nil, CFEqual(e, el) || (holdsTap && !editable) {
                 startAt = blocks.count
             }
-            if skip.contains(r) { return }
+            if skip.contains(r), !(editable && holdsTap) { return }
             // Status pop-ups and alerts shown inside the page ("… reloaded",
             // "Received message from …") aren't part of what you're reading.
             if r == "AXGroup", let sub = string(e, kAXSubroleAttribute),
