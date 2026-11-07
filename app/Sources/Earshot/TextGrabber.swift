@@ -30,6 +30,9 @@ protocol WordLocator: AnyObject, Sendable {
     var debugView: String { get }
     /// The visible part of the page (top-left screen coordinates).
     func visibleArea() -> CGRect?
+    /// Where the last text this locator knows of is on screen: the page can't
+    /// usefully scroll further than bringing it into view.
+    func textEndBox() -> CGRect?
     /// Scrolls the page so the last word found stays comfortably in view.
     /// Returns true when it scrolled.
     func scrollToKeepVisible() -> Bool
@@ -1119,8 +1122,21 @@ final class TextRunLocator: WordLocator, @unchecked Sendable {
     /// "scroll into view", which handles nested scroll areas like Claude's docs.
     func visibleArea() -> CGRect? { viewport() }
 
+    func textEndBox() -> CGRect? {
+        guard loaded else { return nil }
+        // The last word of the last stretch of text.
+        for run in runs.reversed() where run.length > 0 {
+            var last: NSRange?
+            text.enumerateSubstrings(in: NSRange(location: run.start, length: run.length), options: [.byWords, .reverse]) { _, r, _, stop in
+                last = r; stop.pointee = true
+            }
+            if let r = last, let b = box(for: r) { return b }
+        }
+        return nil
+    }
+
     var debugView: String {
-        "visible area \(viewport().map { "\($0)" } ?? "unknown"), last word \(lastRange.flatMap { box(for: $0) }.map { "\($0)" } ?? "none")"
+        "visible area \(viewport().map { "\($0)" } ?? "unknown"), last word \(lastRange.flatMap { box(for: $0) }.map { "\($0)" } ?? "none"), text ends at \(textEndBox().map { "\($0)" } ?? "?")"
     }
 
     func scrollToKeepVisible() -> Bool {

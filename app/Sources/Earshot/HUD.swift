@@ -109,7 +109,7 @@ final class HUD {
     /// The highlight rides with the page step by step, so it never lags behind.
     /// If the spoken word is out of sight (you scrolled away), it glides back
     /// so the word sits a third of the way down.
-    private func follow(_ box: CGRect, in view: CGRect) {
+    private func follow(_ box: CGRect, in view: CGRect, textEnd: CGRect? = nil) {
         guard let locator = lastLocator, !scroller.isBusy else { return }
         learnLineGap(box)
         let gap = lineGap ?? max(box.height * 1.6, 18)
@@ -137,7 +137,17 @@ final class HUD {
         if outOfSight {
             dy = box.midY - (view.minY + view.height * settings.autoScrollReturn)
         } else {
-            dy = min(gap * CGFloat(settings.autoScrollLines), view.height * 0.7)
+            var want = min(gap * CGFloat(settings.autoScrollLines), view.height * 0.7)
+            // Never past the end: at most until the page's last text sits a
+            // line above the bottom of the window.
+            if let end = textEnd {
+                let room = end.maxY + gap - view.maxY
+                if room < want {
+                    want = room
+                    if want < gap * 0.75 { return }  // the end of the page is already in view
+                }
+            }
+            dy = want
         }
         let base = settings.autoScrollGlide
         let duration = outOfSight ? min(base + 0.4, base * 0.7 + Double(abs(dy)) / 2500) : base
@@ -382,12 +392,15 @@ final class HUD {
         finder.async {
             let box = locator.locate(word, next: next)
             let view = box != nil && mayScroll ? locator.visibleArea() : nil
+            // Near the bottom: where the page's text ends, so a glide never asks
+            // for more than the page can move.
+            let end = view.flatMap { v in box.flatMap { $0.maxY > v.midY ? locator.textEndBox() : nil } }
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     self.busy = false
                     if let box {
                         self.place(box)
-                        if let view { self.lastView = view; self.follow(box, in: view) }
+                        if let view { self.lastView = view; self.follow(box, in: view, textEnd: end) }
                     } else { self.stats.missed += 1; self.missed() }
                     self.findNext()
                 }
