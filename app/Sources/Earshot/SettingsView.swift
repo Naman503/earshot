@@ -922,12 +922,33 @@ private struct HighlightTab: View {
             .disabled(!settings.highlightWords)
             Section {
                 Toggle("Scroll the page as it reads", isOn: $settings.autoScroll)
-                Picker("Glide", selection: $settings.autoScrollGlide) {
-                    Text("Quick").tag(0.6)
-                    Text("Smooth").tag(0.9)
-                    Text("Gentle").tag(1.2)
+                Group {
+                    Stepper(value: $settings.autoScrollTrigger, in: 1...10) {
+                        LabeledContent("Start scrolling when the line is", value: "\(settings.autoScrollTrigger) line\(settings.autoScrollTrigger == 1 ? "" : "s") from the bottom")
+                    }
+                    Stepper(value: $settings.autoScrollLines, in: 1...15) {
+                        LabeledContent("Each scroll moves the page", value: "\(settings.autoScrollLines) line\(settings.autoScrollLines == 1 ? "" : "s")")
+                    }
+                    LabeledContent("Glide time") {
+                        HStack {
+                            Text("Quick").font(.caption).foregroundStyle(.secondary)
+                            Slider(value: $settings.autoScrollGlide, in: 0.3...2.0, step: 0.1)
+                            Text("Gentle").font(.caption).foregroundStyle(.secondary)
+                            Text(String(format: "%.1f s", settings.autoScrollGlide)).monospacedDigit().frame(width: 44)
+                        }
+                    }
+                    Picker("Glide shape", selection: $settings.autoScrollEasing) {
+                        Text("Soft start and stop").tag("inOut")
+                        Text("Quick start, slow stop").tag("out")
+                        Text("Steady").tag("steady")
+                    }
+                    Picker("When bringing the line back, put it", selection: $settings.autoScrollReturn) {
+                        Text("Near the top (20%)").tag(0.2)
+                        Text("A third down").tag(0.33)
+                        Text("In the middle").tag(0.5)
+                    }
+                    Toggle("Jump the page if the pointer isn't over it", isOn: $settings.autoScrollJumpOffPointer)
                 }
-                .pickerStyle(.segmented)
                 .disabled(!settings.autoScroll)
                 Picker("After you scroll yourself, wait", selection: $settings.autoScrollPause) {
                     ForEach([2.0, 3, 5, 10, 20], id: \.self) { Text("\(Int($0)) seconds").tag($0) }
@@ -936,7 +957,7 @@ private struct HighlightTab: View {
             } header: {
                 Text("Follow along")
             } footer: {
-                Text("Read down the window as usual; when the spoken line nears the bottom, the page glides up a few lines and the highlight moves with it. Keep the pointer over the page for smooth glides. Scroll or page yourself and it leaves the page alone; once you stop for the time above, it glides back to the spoken line.")
+                Text("Read down the window as usual; when the spoken line reaches the set number of lines from the bottom, the page glides up by the set number of lines and the highlight moves with it. Smooth glides need the pointer resting over the page; with it elsewhere, the page can jump once the line leaves the window. Scroll or page yourself and it leaves the page alone; once you stop for the time above, it glides back to the spoken line.")
                     .font(.caption)
             }
             .disabled(!settings.highlightWords)

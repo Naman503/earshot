@@ -115,14 +115,14 @@ final class HUD {
         let gap = lineGap ?? max(box.height * 1.6, 18)
         let roomBelow = view.maxY - box.maxY
         let outOfSight = box.minY < view.minY + 2 || box.maxY > view.maxY - 2
-        let nearBottom = roomBelow < gap * 3
+        let nearBottom = roomBelow < gap * CGFloat(settings.autoScrollTrigger)
         guard nearBottom || outOfSight else { return }
 
         // Scrolls go where the pointer is, so glide only with it resting over
         // the page; otherwise, once the word leaves the window, bring it into
         // view the plain way.
         guard SmoothScroller.canScroll(pid: locator.pid, view: view) else {
-            guard outOfSight, Date().timeIntervalSince(lastAutoScroll) > 0.8 else { return }
+            guard outOfSight, settings.autoScrollJumpOffPointer, Date().timeIntervalSince(lastAutoScroll) > 0.8 else { return }
             lastAutoScroll = Date()
             stats.scrolled += 1
             finder.async { _ = locator.scrollToKeepVisible() }
@@ -135,9 +135,9 @@ final class HUD {
 
         let dy: CGFloat
         if outOfSight {
-            dy = box.midY - (view.minY + view.height / 3)
+            dy = box.midY - (view.minY + view.height * settings.autoScrollReturn)
         } else {
-            dy = min(gap * 4, view.height * 0.5)
+            dy = min(gap * CGFloat(settings.autoScrollLines), view.height * 0.7)
         }
         let base = settings.autoScrollGlide
         let duration = outOfSight ? min(base + 0.4, base * 0.7 + Double(abs(dy)) / 2500) : base
@@ -145,7 +145,7 @@ final class HUD {
         stats.scrolled += 1
         let startY = box.midY
         var checked = false
-        scroller.scroll(by: dy, pid: locator.pid, view: view, duration: duration, step: { [weak self] delta, sent in
+        scroller.scroll(by: dy, pid: locator.pid, view: view, duration: duration, easing: settings.autoScrollEasing, step: { [weak self] delta, sent in
             guard let self else { return }
             self.marker.shift(by: delta)  // the highlight moves with the page, in the same step
             // Early on, make sure the page really is moving (it may be at its end).
@@ -644,7 +644,7 @@ final class SmoothScroller {
     /// `dy` > 0 moves the content up (shows what's below). A gentle sine
     /// ease-in-out, stepped at 120 Hz. `step` gets each step's size and the
     /// total so far, as it's sent. Stops early if the pointer leaves the page.
-    func scroll(by dy: CGFloat, pid: pid_t, view: CGRect, duration: Double,
+    func scroll(by dy: CGFloat, pid: pid_t, view: CGRect, duration: Double, easing: String = "inOut",
                 step: @escaping (CGFloat, CGFloat) -> Void, done: @escaping () -> Void) {
         timer?.invalidate()
         let start = Date()
@@ -654,7 +654,11 @@ final class SmoothScroller {
             MainActor.assumeIsolated {
                 guard let self, self.timer === t else { t.invalidate(); return }
                 let p = min(1, Date().timeIntervalSince(start) / duration)
-                let eased = (1 - cos(.pi * p)) / 2
+                let eased: Double = switch easing {
+                case "out": 1 - pow(1 - p, 3)             // moves off briskly, settles slowly
+                case "steady": p                          // the same pace throughout
+                default: (1 - cos(.pi * p)) / 2           // starts and ends softly
+                }
                 let goal = (dy * eased).rounded()
                 let delta = goal - sent
                 var ok = true

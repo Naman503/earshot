@@ -43,6 +43,16 @@ final class Settings: ObservableObject {
     @Published var autoScrollPause: Double { didSet { save("autoScrollPause", autoScrollPause) } }
     /// How long each page glide takes, in seconds (longer is gentler).
     @Published var autoScrollGlide: Double { didSet { save("autoScrollGlide", autoScrollGlide) } }
+    /// Scroll when the spoken line is this many lines from the bottom of the window.
+    @Published var autoScrollTrigger: Int { didSet { save("autoScrollTrigger", autoScrollTrigger) } }
+    /// How many lines each glide moves the page.
+    @Published var autoScrollLines: Int { didSet { save("autoScrollLines", autoScrollLines) } }
+    /// The shape of each glide: "inOut", "out" or "steady".
+    @Published var autoScrollEasing: String { didSet { save("autoScrollEasing", autoScrollEasing) } }
+    /// Where the spoken line lands when the page brings it back into view (share of the window from the top).
+    @Published var autoScrollReturn: Double { didSet { save("autoScrollReturn", autoScrollReturn) } }
+    /// With the pointer off the page (smooth glides can't run), still jump the page once the line leaves the window.
+    @Published var autoScrollJumpOffPointer: Bool { didSet { save("autoScrollJumpOffPointer", autoScrollJumpOffPointer) } }
     /// Say IDs, hashes, addresses, keys and long numbers briefly.
     @Published var shortenIDs: Bool { didSet { save("shortenIDs", shortenIDs) } }
     /// Stop the voice engine (freeing ~0.8 GB) after this many idle minutes.
@@ -158,6 +168,11 @@ final class Settings: ObservableObject {
         autoScroll = d.object(forKey: "autoScroll") as? Bool ?? true
         autoScrollPause = d.object(forKey: "autoScrollPause") as? Double ?? 3
         autoScrollGlide = d.object(forKey: "autoScrollGlide") as? Double ?? 0.9
+        autoScrollTrigger = d.object(forKey: "autoScrollTrigger") as? Int ?? 3
+        autoScrollLines = d.object(forKey: "autoScrollLines") as? Int ?? 4
+        autoScrollEasing = d.string(forKey: "autoScrollEasing") ?? "inOut"
+        autoScrollReturn = d.object(forKey: "autoScrollReturn") as? Double ?? 0.33
+        autoScrollJumpOffPointer = d.object(forKey: "autoScrollJumpOffPointer") as? Bool ?? true
         let style = d.string(forKey: "highlightStyle").flatMap(HighlightStyle.init) ?? .soft
         highlightStyle = style
         // Soft (the original look) used the accent colour; bold defaults to yellow.
