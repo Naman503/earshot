@@ -912,6 +912,7 @@ private struct HighlightTab: View {
             Section {
                 Toggle("Highlight each word on the page as it's spoken", isOn: $settings.highlightWords)
                 Toggle("Also highlight it in the now-reading bar", isOn: $settings.highlightWordsInBar)
+                Toggle("Briefly light up the whole paragraph when reading starts", isOn: $settings.flashParagraph)
             } footer: {
                 Text("Short words are lit together with the next one. Works in browsers, Electron apps like Claude, and Mac text views.")
                     .font(.caption)

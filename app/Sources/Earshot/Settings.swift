@@ -35,6 +35,8 @@ final class Settings: ObservableObject {
     @Published var highlightWords: Bool { didSet { save("highlightWords", highlightWords) } }
     /// Also light up the word in the now-reading bar (off: the page is enough).
     @Published var highlightWordsInBar: Bool { didSet { save("highlightWordsInBar", highlightWordsInBar) } }
+    /// Briefly light up the whole paragraph that's about to be read.
+    @Published var flashParagraph: Bool { didSet { save("flashParagraph", flashParagraph) } }
     @Published var highlightColor: HighlightColor { didSet { save("highlightColor", highlightColor.rawValue) } }
     @Published var highlightStyle: HighlightStyle { didSet { save("highlightStyle", highlightStyle.rawValue) } }
     /// Scroll the page to keep the spoken word in view.
@@ -165,6 +167,7 @@ final class Settings: ObservableObject {
         highlightSource = d.object(forKey: "highlightSource") as? Bool ?? true
         highlightWords = d.object(forKey: "highlightWords") as? Bool ?? true
         highlightWordsInBar = d.object(forKey: "highlightWordsInBar") as? Bool ?? false
+        flashParagraph = d.object(forKey: "flashParagraph") as? Bool ?? true
         autoScroll = d.object(forKey: "autoScroll") as? Bool ?? true
         autoScrollPause = d.object(forKey: "autoScrollPause") as? Double ?? 3
         autoScrollGlide = d.object(forKey: "autoScrollGlide") as? Double ?? 0.9

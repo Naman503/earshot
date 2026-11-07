@@ -329,7 +329,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func start(_ grab: Grab) {
-        if let f = grab.frame { hud.flash(rect: f) }
+        if settings.flashParagraph, let f = grab.frame { hud.flash(rect: f) }
         reader.read(grab.text, source: grab.source, locator: grab.locator)
     }
 
