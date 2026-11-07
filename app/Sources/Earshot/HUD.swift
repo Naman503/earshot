@@ -103,86 +103,107 @@ final class HUD {
 
     private let scroller = SmoothScroller()
 
-    /// Teleprompter-style following: keep the spoken line at a set height in
-    /// the window. When the voice moves to a lower line, the page glides up by
-    /// the difference (a line at a time while reading); when the word is above
-    /// the window, it glides down to it.
+    /// Page-turn style following. You read normally down the window; when
+    /// the spoken line comes within about three lines of the bottom, the page
+    /// glides up about four lines, slowly and smoothly, and reading goes on.
+    /// The highlight rides with the page step by step, so it never lags behind.
+    /// If the spoken word is out of sight (you scrolled away), it glides back
+    /// so the word sits a third of the way down.
     private func follow(_ box: CGRect, in view: CGRect) {
         guard let locator = lastLocator, !scroller.isBusy else { return }
-        let target = view.minY + view.height * settings.autoScrollAnchor
-        let dy = box.midY - target
-        let offBottom = box.maxY > view.maxY - 4
-        let offTop = box.minY < view.minY + 4
-        let below = dy > box.height * 0.8
-        guard below || offTop else { return }
-        // The page didn't move last time (end of the page, or the app ignores
-        // scroll steps): leave it, unless the word is now out of sight — then
-        // jump it into view the plain way.
-        // Glide only with the pointer resting over the page (scrolls go where
-        // the pointer is); otherwise, once the word leaves the window, bring
-        // it into view the plain way.
-        if !SmoothScroller.canScroll(pid: locator.pid, view: view) {
-            guard offBottom || offTop, Date().timeIntervalSince(lastAutoScroll) > 0.8 else { return }
+        learnLineGap(box)
+        let gap = lineGap ?? max(box.height * 1.6, 18)
+        let roomBelow = view.maxY - box.maxY
+        let outOfSight = box.minY < view.minY + 2 || box.maxY > view.maxY - 2
+        let nearBottom = roomBelow < gap * 3
+        guard nearBottom || outOfSight else { return }
+
+        // Scrolls go where the pointer is, so glide only with it resting over
+        // the page; otherwise, once the word leaves the window, bring it into
+        // view the plain way.
+        guard SmoothScroller.canScroll(pid: locator.pid, view: view) else {
+            guard outOfSight, Date().timeIntervalSince(lastAutoScroll) > 0.8 else { return }
             lastAutoScroll = Date()
             stats.scrolled += 1
             finder.async { _ = locator.scrollToKeepVisible() }
             return
         }
-        if pageStuck {
-            guard offBottom || offTop else { return }
-            pageStuck = false
-            stats.scrolled += 1
-            finder.async { _ = locator.scrollToKeepVisible() }
-            return
+        // The page didn't move last time (its end): only try again once the
+        // word is out of sight.
+        if pageStuck, !outOfSight { return }
+        pageStuck = false
+
+        let dy: CGFloat
+        if outOfSight {
+            dy = box.midY - (view.minY + view.height / 3)
+        } else {
+            dy = min(gap * 4, view.height * 0.5)
         }
+        let base = settings.autoScrollGlide
+        let duration = outOfSight ? min(base + 0.4, base * 0.7 + Double(abs(dy)) / 2500) : base
         lastAutoScroll = Date()
         stats.scrolled += 1
-        let duration = min(0.6, 0.22 + abs(dy) / 3000)
         let startY = box.midY
-        scroller.scroll(by: dy, pid: locator.pid, view: view, duration: duration, step: { [weak self] in
-            self?.trackGlide(locator)
-        }, done: { [weak self] in
-            // Measure where the word really went: the highlight follows the
-            // text, never the plan.
+        var checked = false
+        scroller.scroll(by: dy, pid: locator.pid, view: view, duration: duration, step: { [weak self] delta, sent in
             guard let self else { return }
-            self.finder.async {
-                usleep(60_000)
+            self.marker.shift(by: delta)  // the highlight moves with the page, in the same step
+            // Early on, make sure the page really is moving (it may be at its end).
+            if !checked, abs(sent) >= min(abs(dy) * 0.25, 40) {
+                checked = true
+                self.verifyGlide(locator, startY: startY, sent: sent)
+            }
+        }, done: { [weak self] in
+            // Settle the highlight exactly on the word once the page stops.
+            guard let self else { return }
+            self.finder.asyncAfter(deadline: .now() + 0.05) {
                 let now = locator.remeasure()
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
                         guard let now else { return }
-                        if self.sourceInFront, self.lastLocator === locator { self.marker.show(now) }
-                        let moved = startY - now.midY
-                        if abs(moved) < abs(dy) * 0.3 {
-                            self.pageStuck = true
-                            Log.write("highlight: page didn't scroll (asked \(Int(dy)), moved \(Int(moved)))")
-                        }
+                        Log.write("highlight: glide \(Int(dy)) px in \(String(format: "%.2f", duration)) s, text moved \(Int(startY - now.midY)) px")
+                        if self.sourceInFront, self.lastLocator === locator, !self.scroller.isBusy { self.marker.show(now) }
                     }
                 }
             }
         })
     }
 
-    /// Set when a glide didn't move the page; cleared by your own scrolling
-    /// or a new reading.
-    private var pageStuck = false
-    private var glideBusy = false
-
-    /// While gliding, keep the highlight on the word as the page actually moves.
-    private func trackGlide(_ locator: WordLocator) {
-        guard !glideBusy, Date().timeIntervalSince(lastFollow) > 0.033 else { return }
-        lastFollow = Date()
-        glideBusy = true
-        finder.async {
-            let box = locator.remeasure()
+    /// Mid-glide check: if the text hasn't moved, the page can't scroll — stop
+    /// and put the highlight back on the word.
+    private func verifyGlide(_ locator: WordLocator, startY: CGFloat, sent: CGFloat) {
+        finder.asyncAfter(deadline: .now() + 0.05) {
+            let now = locator.remeasure()
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    self.glideBusy = false
-                    if let box, self.sourceInFront, self.lastLocator === locator { self.marker.show(box) }
+                    guard let now else { return }
+                    let moved = startY - now.midY
+                    if abs(moved) < abs(sent) * 0.3 {
+                        self.scroller.cancel()
+                        self.pageStuck = true
+                        if self.sourceInFront, self.lastLocator === locator { self.marker.show(now) }
+                        Log.write("highlight: page didn't scroll (sent \(Int(sent)), moved \(Int(moved)))")
+                    }
                 }
             }
         }
     }
+
+    /// The distance between lines on this page, learned from the reading.
+    private var lineGap: CGFloat?
+    private var lastLineY: CGFloat?
+    private func learnLineGap(_ box: CGRect) {
+        defer { lastLineY = box.midY }
+        guard let last = lastLineY else { return }
+        let d = box.midY - last
+        if d > box.height * 0.8, d < box.height * 3 {  // moved down exactly one line
+            lineGap = lineGap.map { $0 * 0.7 + d * 0.3 } ?? d
+        }
+    }
+
+    /// Set when a glide didn't move the page; cleared by your own scrolling
+    /// or a new reading.
+    private var pageStuck = false
 
     /// When you last scrolled or paged yourself (auto-scroll waits after it).
     private var lastUserScroll = Date.distantPast
@@ -262,6 +283,8 @@ final class HUD {
         pending = nil
         lastLocator = nil
         pageStuck = false
+        lineGap = nil
+        lastLineY = nil
         missedSince = nil
         marker.hide()
     }
@@ -612,28 +635,38 @@ final class SmoothScroller {
         return windowOwner(at: mouse) == pid
     }
 
-    /// `dy` > 0 moves the content up (shows what's below). Stops early if the
-    /// pointer leaves the page.
+    func cancel() {
+        timer?.invalidate()
+        timer = nil
+        isBusy = false
+    }
+
+    /// `dy` > 0 moves the content up (shows what's below). A gentle sine
+    /// ease-in-out, stepped at 120 Hz. `step` gets each step's size and the
+    /// total so far, as it's sent. Stops early if the pointer leaves the page.
     func scroll(by dy: CGFloat, pid: pid_t, view: CGRect, duration: Double,
-                step: @escaping () -> Void, done: @escaping () -> Void) {
+                step: @escaping (CGFloat, CGFloat) -> Void, done: @escaping () -> Void) {
         timer?.invalidate()
         let start = Date()
         var sent: CGFloat = 0
         isBusy = true
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 120, repeats: true) { [weak self] t in
+        let t = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak self] t in
             MainActor.assumeIsolated {
+                guard let self, self.timer === t else { t.invalidate(); return }
                 let p = min(1, Date().timeIntervalSince(start) / duration)
-                let eased = p < 0.5 ? 4 * p * p * p : 1 - pow(-2 * p + 2, 3) / 2
+                let eased = (1 - cos(.pi * p)) / 2
                 let goal = (dy * eased).rounded()
                 let delta = goal - sent
                 var ok = true
                 if delta != 0 {
                     ok = Self.post(-delta, pid: pid, view: view)
-                    if ok { sent = goal; step() }
+                    if ok { sent = goal; step(delta, sent) }
                 }
-                if p >= 1 || !ok { t.invalidate(); self?.isBusy = false; done() }
+                if p >= 1 || !ok { self.cancel(); done() }
             }
         }
+        RunLoop.main.add(t, forMode: .common)  // keeps gliding while menus or drags track
+        timer = t
     }
 
     /// One scroll step at the pointer, only while it's over the page.
