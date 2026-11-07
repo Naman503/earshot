@@ -44,6 +44,12 @@ final class HUD {
         scrollMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.scrollWheel, .leftMouseDragged]) { [weak self] _ in
             MainActor.assumeIsolated { self?.pageMoved() }
         }
+        // Paging with the keyboard (Page Up/Down, arrows, Space, Home/End) is you
+        // moving the page too: auto-scroll waits.
+        keyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            guard [116, 121, 125, 126, 115, 119, 49].contains(Int(e.keyCode)) else { return }
+            MainActor.assumeIsolated { self?.lastUserScroll = Date() }
+        }
         // Switching apps or desktops: hide the marker unless the app being read
         // is the one in front; coming back, the next word shows it again.
         for name in [NSWorkspace.didActivateApplicationNotification, NSWorkspace.activeSpaceDidChangeNotification] {
@@ -95,7 +101,13 @@ final class HUD {
     private var scrollEnd: DispatchWorkItem?
     private var lastFollow = Date.distantPast
 
+    /// When you last scrolled or paged yourself (auto-scroll waits after it).
+    private var lastUserScroll = Date.distantPast
+    private var lastAutoScroll = Date.distantPast
+    private var keyMonitor: Any?
+
     private func pageMoved() {
+        lastUserScroll = Date()
         scrollEnd?.cancel()
         let end = DispatchWorkItem { [weak self] in
             guard let self else { return }
@@ -124,8 +136,18 @@ final class HUD {
         guard !busy, scrollEnd == nil, let (word, next, locator) = pending else { return }
         pending = nil
         busy = true
+        // Follow the reading by scrolling — unless you're scrolling (or paged)
+        // yourself recently, the app isn't in front, or it scrolled just now.
+        let mayScroll = settings.autoScroll && settings.highlightWords && sourceInFront
+            && Date().timeIntervalSince(lastUserScroll) > settings.autoScrollPause
+            && Date().timeIntervalSince(lastAutoScroll) > 0.8
         finder.async {
-            let box = locator.locate(word, next: next)
+            var box = locator.locate(word, next: next)
+            if box != nil, mayScroll, locator.scrollToKeepVisible() {
+                DispatchQueue.main.async { MainActor.assumeIsolated { self.lastAutoScroll = Date(); self.stats.scrolled += 1 } }
+                usleep(250_000)  // let the page settle, then measure the word again
+                box = locator.remeasure() ?? box
+            }
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     self.busy = false
@@ -143,12 +165,12 @@ final class HUD {
     }
 
     /// Per reading, for the log: words placed, not found, hidden (app not in front).
-    private var stats = (placed: 0, missed: 0, hidden: 0)
+    private var stats = (placed: 0, missed: 0, hidden: 0, scrolled: 0)
 
     private func hideWord() {
-        if stats.placed + stats.missed + stats.hidden > 0 {
-            Log.write("highlight: \(stats.placed) words shown, \(stats.missed) not found, \(stats.hidden) hidden (other app in front)")
-            stats = (0, 0, 0)
+        if stats.placed + stats.missed + stats.hidden + stats.scrolled > 0 {
+            Log.write("highlight: \(stats.placed) words shown, \(stats.missed) not found, \(stats.hidden) hidden (other app in front), \(stats.scrolled) auto-scrolls")
+            stats = (0, 0, 0, 0)
         }
         pending = nil
         lastLocator = nil

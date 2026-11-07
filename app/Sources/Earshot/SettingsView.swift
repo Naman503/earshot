@@ -921,6 +921,19 @@ private struct HighlightTab: View {
             }
             .disabled(!settings.highlightWords)
             Section {
+                Toggle("Scroll to keep the spoken word in view", isOn: $settings.autoScroll)
+                Picker("After you scroll yourself, wait", selection: $settings.autoScrollPause) {
+                    ForEach([2.0, 3, 5, 10, 20], id: \.self) { Text("\(Int($0)) seconds").tag($0) }
+                }
+                .disabled(!settings.autoScroll)
+            } header: {
+                Text("Follow along")
+            } footer: {
+                Text("When the spoken word nears the bottom of the window, the page scrolls so it sits about a third of the way down. Scroll or page yourself and it leaves the page alone; once you stop for the time above, it brings the spoken word back into view.")
+                    .font(.caption)
+            }
+            .disabled(!settings.highlightWords)
+            Section {
                 LabeledContent("Timing") {
                     HStack {
                         Text("Earlier").font(.caption).foregroundStyle(.secondary)

@@ -26,6 +26,9 @@ protocol WordLocator: AnyObject, Sendable {
     func remeasure() -> CGRect?
     /// The app the words are in (the marker only shows while it's in front).
     var pid: pid_t { get }
+    /// Scrolls the page so the last word found stays comfortably in view.
+    /// Returns true when it scrolled.
+    func scrollToKeepVisible() -> Bool
 }
 
 /// Letters and digits only, lowercased: "Earshot's," → "earshots".
@@ -1054,6 +1057,21 @@ final class TextGrabber {
 // MARK: Follow-along word finding
 
 extension TextGrabber {
+    func elementFrame(_ el: AXUIElement) -> CGRect? { frame(el) }
+
+    /// The app's own "scroll this into view" (as screen readers use it).
+    func scrollIntoView(_ el: AXUIElement) -> Bool {
+        AXUIElementPerformAction(el, "AXScrollToVisible" as CFString) == .success
+    }
+
+    /// The part of `el` that's visible: its frame within its window's.
+    func visibleFrame(of el: AXUIElement) -> CGRect? {
+        guard let f = frame(el) else { return nil }
+        guard let w = attrElement(el, kAXWindowAttribute), let wf = frame(w) else { return f }
+        let v = f.intersection(wf)
+        return v.isNull ? nil : v
+    }
+
     func textBounds(_ el: AXUIElement, _ range: NSRange) -> CGRect? {
         var cf = CFRange(location: range.location, length: range.length)
         return AXValueCreate(.cfRange, &cf).flatMap { paramRect(el, kAXBoundsForRangeParameterizedAttribute, $0) }
@@ -1079,11 +1097,38 @@ final class TextRunLocator: WordLocator, @unchecked Sendable {
     var lastRange: NSRange?
 
     let pid: pid_t
+    /// The visible part of the page (top-left screen coordinates).
+    private let viewport: () -> CGRect?
 
-    init(grabber: TextGrabber, pid: pid_t, load: @escaping () -> (runs: [Run], text: String, cursor: Int)?) {
+    init(grabber: TextGrabber, pid: pid_t, viewport: @escaping () -> CGRect? = { nil },
+         load: @escaping () -> (runs: [Run], text: String, cursor: Int)?) {
         self.grabber = grabber
         self.pid = pid
+        self.viewport = viewport
         self.load = load
+    }
+
+    /// Near the bottom (or above the top) of the visible area: ask the app to
+    /// bring a line further on into view (it scrolls just enough to show it), so
+    /// the spoken word lands about a third of the way down. Uses the app's own
+    /// "scroll into view", which handles nested scroll areas like Claude's docs.
+    func scrollToKeepVisible() -> Bool {
+        guard loaded, let range = lastRange, let box = box(for: range), let view = viewport(), view.height > 80,
+              let i = runs.firstIndex(where: { NSMaxRange(range) > $0.start && range.location < $0.start + $0.length }) else { return false }
+        let h = view.height
+        if box.maxY > view.minY + h * 0.8 || box.minY > view.maxY {
+            // Going down: the first piece of text about 60% of a screen below the word.
+            for run in runs[i...].prefix(400) {
+                guard let f = grabber.elementFrame(run.element) else { continue }
+                if f.minY >= box.minY + h * 0.6 { return grabber.scrollIntoView(run.element) }
+            }
+            return runs.last.map { grabber.scrollIntoView($0.element) } ?? false
+        }
+        if box.maxY < view.minY + h * 0.1 {
+            // Above the visible area: bring the word itself into view.
+            return grabber.scrollIntoView(runs[i].element)
+        }
+        return false
     }
 
     func locate(_ phrase: String, next: String) -> CGRect? {
@@ -1233,7 +1278,7 @@ extension TextGrabber {
     func textViewLocator(_ el: AXUIElement, text: String, start: Int) -> TextRunLocator {
         var pid: pid_t = 0
         AXUIElementGetPid(el, &pid)
-        return TextRunLocator(grabber: self, pid: pid) {
+        return TextRunLocator(grabber: self, pid: pid, viewport: { [weak self] in self?.visibleFrame(of: el) }) {
             ([TextRunLocator.Run(element: el, start: 0, length: (text as NSString).length)], text, start)
         }
     }
@@ -1243,7 +1288,7 @@ extension TextGrabber {
     func webLocator(web: AXUIElement, start marker: CFTypeRef?, element hint: AXUIElement?, wholePage: Bool) -> WordLocator {
         var pid: pid_t = 0
         AXUIElementGetPid(web, &pid)
-        return TextRunLocator(grabber: self, pid: pid) { [self] in
+        return TextRunLocator(grabber: self, pid: pid, viewport: { [weak self] in self?.visibleFrame(of: web) }) { [self] in
             let fromMarker = marker.flatMap { paramValue(web, "AXUIElementForTextMarker", $0) }
                 .flatMap { CFGetTypeID($0) == AXUIElementGetTypeID() ? ($0 as! AXUIElement) : nil }
             // The element tapped decides the area: a paragraph's start position is
