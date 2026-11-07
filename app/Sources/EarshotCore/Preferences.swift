@@ -61,6 +61,18 @@ public enum OutputPolicy: String, CaseIterable, Codable, Sendable {
 }
 
 /// What to do with other audio (videos, music) while reading.
+/// How the word highlight looks.
+public enum HighlightStyle: String, CaseIterable, Codable, Sendable {
+    case soft, bold
+
+    public var title: String {
+        switch self {
+        case .soft: "Soft — light tint and thin underline"
+        case .bold: "Bold — strong fill, border and thick underline"
+        }
+    }
+}
+
 /// Colour of the word highlight at normal speed.
 public enum HighlightColor: String, CaseIterable, Codable, Sendable {
     case yellow, green, pink, blue, accent

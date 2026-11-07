@@ -36,6 +36,7 @@ final class Settings: ObservableObject {
     /// Also light up the word in the now-reading bar (off: the page is enough).
     @Published var highlightWordsInBar: Bool { didSet { save("highlightWordsInBar", highlightWordsInBar) } }
     @Published var highlightColor: HighlightColor { didSet { save("highlightColor", highlightColor.rawValue) } }
+    @Published var highlightStyle: HighlightStyle { didSet { save("highlightStyle", highlightStyle.rawValue) } }
     /// Say IDs, hashes, addresses, keys and long numbers briefly.
     @Published var shortenIDs: Bool { didSet { save("shortenIDs", shortenIDs) } }
     /// Stop the voice engine (freeing ~0.8 GB) after this many idle minutes.
@@ -148,7 +149,11 @@ final class Settings: ObservableObject {
         highlightSource = d.object(forKey: "highlightSource") as? Bool ?? true
         highlightWords = d.object(forKey: "highlightWords") as? Bool ?? true
         highlightWordsInBar = d.object(forKey: "highlightWordsInBar") as? Bool ?? false
-        highlightColor = d.string(forKey: "highlightColor").flatMap(HighlightColor.init) ?? .yellow
+        let style = d.string(forKey: "highlightStyle").flatMap(HighlightStyle.init) ?? .soft
+        highlightStyle = style
+        // Soft (the original look) used the accent colour; bold defaults to yellow.
+        let defaultColor: HighlightColor = style == .soft ? .accent : .yellow
+        highlightColor = d.string(forKey: "highlightColor").flatMap(HighlightColor.init) ?? defaultColor
         shortenIDs = d.object(forKey: "shortenIDs") as? Bool ?? true
         sleepVoiceWhenIdle = d.object(forKey: "sleepVoiceWhenIdle") as? Bool ?? false
         sleepVoiceAfterMinutes = d.object(forKey: "sleepVoiceAfterMinutes") as? Int ?? 10

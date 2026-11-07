@@ -1,4 +1,5 @@
 import AppKit
+import EarshotCore
 import ScreenCaptureKit
 import SwiftUI
 
@@ -165,7 +166,7 @@ final class HUD {
         missedSince = nil
         guard sourceInFront else { stats.hidden += 1; marker.hide(); return }
         stats.placed += 1
-        marker.tint(for: reader.speedMode, normal: settings.highlightColor.color)
+        marker.tint(for: reader.speedMode, normal: settings.highlightColor.color, style: settings.highlightStyle)
         marker.show(rect)
         captureIfAsked(rect)
     }
@@ -357,22 +358,28 @@ final class WordMarker {
     /// accent tint all but vanished on dark backgrounds): a strong fill, a
     /// solid underline and a thin border. Normal speed uses the chosen colour,
     /// fast is orange, slow is teal.
-    func tint(for mode: Reader.SpeedMode, normal: NSColor = .systemYellow) {
+    func tint(for mode: Reader.SpeedMode, normal: NSColor = .systemYellow, style: HighlightStyle = .bold) {
         let color: NSColor = switch mode {
         case .normal: normal
         case .boost: .systemOrange
         case .slow: .systemTeal
         }
-        guard color != tintColor else { return }
+        guard color != tintColor || style != tintStyle else { return }
         tintColor = color
+        tintStyle = style
+        let bold = style == .bold
         CATransaction.begin()
         CATransaction.setAnimationDuration(0.2)
-        fill.backgroundColor = color.withAlphaComponent(0.42).cgColor
+        // Soft is the original look: a light tint and a thin underline.
+        fill.backgroundColor = color.withAlphaComponent(bold ? 0.42 : 0.22).cgColor
         fill.borderColor = color.withAlphaComponent(0.95).cgColor
-        fill.borderWidth = 1.5
-        underline.backgroundColor = color.cgColor
+        fill.borderWidth = bold ? 1.5 : 0
+        underline.backgroundColor = color.withAlphaComponent(bold ? 1 : 0.95).cgColor
+        underlineHeight = bold ? 3 : 2.5
         CATransaction.commit()
     }
+    private var tintStyle: HighlightStyle?
+    private var underlineHeight: CGFloat = 3
     private var tintColor: NSColor?
 
     /// Debug: what the marker window is doing.
@@ -398,7 +405,7 @@ final class WordMarker {
     private func layout(_ r: CGRect) {
         fill.frame = r
         fill.cornerRadius = min(6, r.height * 0.3)
-        underline.frame = CGRect(x: r.minX + 1, y: r.minY - 2, width: r.width - 2, height: 3)
+        underline.frame = CGRect(x: r.minX + 1, y: r.minY - 2, width: r.width - 2, height: underlineHeight)
     }
 
     private func fadeIn() {
