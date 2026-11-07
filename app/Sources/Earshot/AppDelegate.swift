@@ -748,6 +748,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     }
                     Log.write("follow-test: \(found) found, \(missed) missed")
                 }
+            case "--marker-variant":
+                // Shows the word marker mid-screen for 4 s with a given window behaviour.
+                let variants: [String: NSWindow.CollectionBehavior] = [
+                    "now": [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle, .canJoinAllApplications, .auxiliary],
+                    "noaux": [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle, .canJoinAllApplications],
+                    "old": [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle],
+                    "allapps": [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle, .canJoinAllApplications],
+                ]
+                HUD.overlayBehavior = variants[value] ?? HUD.overlayBehavior
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    self.hud.testMarker(CGRect(x: 800, y: 560, width: 120, height: 18))
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 4) { self.hud.testMarkerHide() }
+                }
             case "--speed-test":
                 // Muted reading with speed changes; logs whether audio is re-made at each speed.
                 // "--speed-test=90" first stays idle 90 s (to test a cold, swapped-out engine).

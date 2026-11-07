@@ -1,4 +1,5 @@
 import AppKit
+import ScreenCaptureKit
 import SwiftUI
 
 /// A small floating "now reading" bar at the bottom of the screen, plus a
@@ -20,7 +21,7 @@ final class HUD {
     /// Earshot's overlays (bar, word marker, outline) show over whatever app
     /// you're in: on every desktop, over full-screen apps, and with Stage
     /// Manager, which otherwise hides them because they aren't the front app's.
-    static let overlayBehavior: NSWindow.CollectionBehavior =
+    nonisolated(unsafe) static var overlayBehavior: NSWindow.CollectionBehavior =
         [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle, .canJoinAllApplications, .auxiliary]
 
     init(reader: Reader, settings: Settings) {
@@ -164,9 +165,40 @@ final class HUD {
         missedSince = nil
         guard sourceInFront else { stats.hidden += 1; marker.hide(); return }
         stats.placed += 1
-        marker.tint(for: reader.speedMode)
+        marker.tint(for: reader.speedMode, normal: settings.highlightColor.color)
         marker.show(rect)
+        captureIfAsked(rect)
     }
+
+    /// Diagnostics: if ~/Library/Logs/Earshot/capture-next exists, the next
+    /// placed word is photographed (with the marker) and the flag removed.
+    private func captureIfAsked(_ rect: CGRect) {
+        let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Earshot")
+        let flag = dir.appendingPathComponent("capture-next")
+        guard FileManager.default.fileExists(atPath: flag.path) else { return }
+        try? FileManager.default.removeItem(at: flag)
+        let state = marker.debugState
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            Task {
+                Log.write("capture: word at \(rect), marker \(state), front \(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?")")
+                guard let content = try? await SCShareableContent.current, let d = content.displays.first else { Log.write("capture: no display"); return }
+                let config = SCStreamConfiguration()
+                config.sourceRect = rect.insetBy(dx: -220, dy: -120)
+                config.width = Int(config.sourceRect.width * 2)
+                config.height = Int(config.sourceRect.height * 2)
+                guard let img = try? await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(display: d, excludingWindows: []), configuration: config) else {
+                    Log.write("capture: screenshot failed"); return
+                }
+                let url = dir.appendingPathComponent("capture.png")
+                try? NSBitmapImageRep(cgImage: img).representation(using: .png, properties: [:])?.write(to: url)
+                Log.write("capture: saved \(url.path)")
+            }
+        }
+    }
+
+    /// Debug: shows the word marker over `rect` (to check it's visible).
+    func testMarker(_ rect: CGRect) { marker.show(rect) }
+    func testMarkerHide() { marker.hide() }
 
     /// Outlines `rect` (top-left screen coordinates) for a moment.
     func flash(rect: CGRect) {
@@ -299,7 +331,7 @@ final class WordMarker {
         let sameLine = visible && lastRect.map { abs($0.midY - rect.midY) < rect.height * 0.5 } == true
         CATransaction.begin()
         if sameLine {
-            CATransaction.setAnimationDuration(0.12)
+            CATransaction.setAnimationDuration(0.07)  // quick, so it never looks smeared between words
             CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
         } else {
             CATransaction.setDisableActions(true)  // new line: jump, then fade in
@@ -321,21 +353,33 @@ final class WordMarker {
     }
 
     /// Accent colour at normal speed, orange while fast, teal while slow.
-    func tint(for mode: Reader.SpeedMode) {
+    /// Bold enough to follow at a glance on dark and light pages (the old 22%
+    /// accent tint all but vanished on dark backgrounds): a strong fill, a
+    /// solid underline and a thin border. Normal speed uses the chosen colour,
+    /// fast is orange, slow is teal.
+    func tint(for mode: Reader.SpeedMode, normal: NSColor = .systemYellow) {
         let color: NSColor = switch mode {
-        case .normal: .controlAccentColor
+        case .normal: normal
         case .boost: .systemOrange
         case .slow: .systemTeal
         }
         guard color != tintColor else { return }
         tintColor = color
         CATransaction.begin()
-        CATransaction.setAnimationDuration(0.25)
-        fill.backgroundColor = color.withAlphaComponent(0.22).cgColor
-        underline.backgroundColor = color.withAlphaComponent(0.95).cgColor
+        CATransaction.setAnimationDuration(0.2)
+        fill.backgroundColor = color.withAlphaComponent(0.42).cgColor
+        fill.borderColor = color.withAlphaComponent(0.95).cgColor
+        fill.borderWidth = 1.5
+        underline.backgroundColor = color.cgColor
         CATransaction.commit()
     }
     private var tintColor: NSColor?
+
+    /// Debug: what the marker window is doing.
+    var debugState: String {
+        guard let w = window else { return "no window yet" }
+        return "window visible \(w.isVisible), on active space \(w.isOnActiveSpace), frame \(w.frame), level \(w.level.rawValue), layer frame \(fill.frame), opacity \(fill.opacity)"
+    }
 
     func hide() {
         guard visible else { return }
@@ -354,7 +398,7 @@ final class WordMarker {
     private func layout(_ r: CGRect) {
         fill.frame = r
         fill.cornerRadius = min(6, r.height * 0.3)
-        underline.frame = CGRect(x: r.minX + 2, y: r.minY - 1, width: r.width - 4, height: 2.5)
+        underline.frame = CGRect(x: r.minX + 1, y: r.minY - 2, width: r.width - 2, height: 3)
     }
 
     private func fadeIn() {
@@ -379,11 +423,10 @@ final class WordMarker {
             w.collectionBehavior = HUD.overlayBehavior
             let v = NSView()
             v.wantsLayer = true
-            let accent = NSColor.controlAccentColor
-            fill.backgroundColor = accent.withAlphaComponent(0.20).cgColor
+            fill.backgroundColor = NSColor.systemYellow.withAlphaComponent(0.42).cgColor
             fill.opacity = 0
-            underline.backgroundColor = accent.withAlphaComponent(0.95).cgColor
-            underline.cornerRadius = 1.25
+            underline.backgroundColor = NSColor.systemYellow.cgColor
+            underline.cornerRadius = 1.5
             underline.opacity = 0
             v.layer?.addSublayer(fill)
             v.layer?.addSublayer(underline)

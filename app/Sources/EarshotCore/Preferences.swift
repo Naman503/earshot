@@ -61,6 +61,21 @@ public enum OutputPolicy: String, CaseIterable, Codable, Sendable {
 }
 
 /// What to do with other audio (videos, music) while reading.
+/// Colour of the word highlight at normal speed.
+public enum HighlightColor: String, CaseIterable, Codable, Sendable {
+    case yellow, green, pink, blue, accent
+
+    public var title: String {
+        switch self {
+        case .yellow: "Yellow"
+        case .green: "Green"
+        case .pink: "Pink"
+        case .blue: "Blue"
+        case .accent: "System accent colour"
+        }
+    }
+}
+
 /// A single key that does something only while it's held down on its own.
 public enum HoldKey: String, CaseIterable, Codable, Sendable {
     case none, fn, control, option, rightOption, rightCommand, shift

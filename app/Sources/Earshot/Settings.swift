@@ -1,3 +1,4 @@
+import AppKit
 import Carbon.HIToolbox
 import EarshotCore
 import Foundation
@@ -34,6 +35,7 @@ final class Settings: ObservableObject {
     @Published var highlightWords: Bool { didSet { save("highlightWords", highlightWords) } }
     /// Also light up the word in the now-reading bar (off: the page is enough).
     @Published var highlightWordsInBar: Bool { didSet { save("highlightWordsInBar", highlightWordsInBar) } }
+    @Published var highlightColor: HighlightColor { didSet { save("highlightColor", highlightColor.rawValue) } }
     /// Say IDs, hashes, addresses, keys and long numbers briefly.
     @Published var shortenIDs: Bool { didSet { save("shortenIDs", shortenIDs) } }
     /// Stop the voice engine (freeing ~0.8 GB) after this many idle minutes.
@@ -146,6 +148,7 @@ final class Settings: ObservableObject {
         highlightSource = d.object(forKey: "highlightSource") as? Bool ?? true
         highlightWords = d.object(forKey: "highlightWords") as? Bool ?? true
         highlightWordsInBar = d.object(forKey: "highlightWordsInBar") as? Bool ?? false
+        highlightColor = d.string(forKey: "highlightColor").flatMap(HighlightColor.init) ?? .yellow
         shortenIDs = d.object(forKey: "shortenIDs") as? Bool ?? true
         sleepVoiceWhenIdle = d.object(forKey: "sleepVoiceWhenIdle") as? Bool ?? false
         sleepVoiceAfterMinutes = d.object(forKey: "sleepVoiceAfterMinutes") as? Int ?? 10
@@ -231,6 +234,18 @@ enum Log {
             } else {
                 try? line.data(using: .utf8)!.write(to: url)
             }
+        }
+    }
+}
+
+extension HighlightColor {
+    var color: NSColor {
+        switch self {
+        case .yellow: .systemYellow
+        case .green: .systemGreen
+        case .pink: .systemPink
+        case .blue: .systemBlue
+        case .accent: .controlAccentColor
         }
     }
 }

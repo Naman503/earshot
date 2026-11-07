@@ -681,6 +681,9 @@ private struct ReadingTab: View {
                 Toggle("Show the now-reading bar", isOn: $settings.showHUD)
                 Toggle("Outline the text that was picked up", isOn: $settings.highlightSource)
                 Toggle("Highlight each word on the page as it's spoken", isOn: $settings.highlightWords)
+                Picker("Highlight colour", selection: $settings.highlightColor) {
+                    ForEach(HighlightColor.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
                 Toggle("Also highlight it in the now-reading bar", isOn: $settings.highlightWordsInBar)
                 LabeledContent("Highlight timing") {
                     HStack {
