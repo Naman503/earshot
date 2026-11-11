@@ -56,6 +56,9 @@ final class HUD {
             NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
+                    if name == NSWorkspace.activeSpaceDidChangeNotification {
+                        self.marker.newDesktop()  // a fresh marker window on the desktop you moved to
+                    }
                     self.marker.hide()
                     if self.sourceInFront { self.findNext() }
                 }
@@ -650,12 +653,13 @@ final class WordMarker {
         layout(local)
         CATransaction.commit()
         if visible, !w.isVisible || !w.isOnActiveSpace {
-            // The system took the marker window away (sleep, a display or
-            // desktop change) while we thought it was showing: bring it back.
-            Log.write("highlight: marker window was hidden by the system — showing it again")
-            visible = false
-            fill.opacity = 0
-            underline.opacity = 0
+            // The system took the marker window away, or left it on another
+            // desktop after a swipe: re-showing it doesn't move it between
+            // desktops, so start over with a fresh window on this one.
+            Log.write("highlight: marker window was \(w.isVisible ? "on another desktop" : "hidden by the system") — making a new one here")
+            rebuild()
+            show(rect)
+            return
         }
         if !visible {
             w.orderFrontRegardless()
@@ -749,10 +753,31 @@ final class WordMarker {
         underline.add(a, forKey: "fade")
     }
 
+    func newDesktop() { rebuild() }
+
+    /// Drops the marker window so the next show makes a new one on the
+    /// desktop you're on now.
+    private func rebuild() {
+        fill.removeFromSuperlayer()
+        underline.removeFromSuperlayer()
+        fill.removeAllAnimations()
+        underline.removeAllAnimations()
+        window?.orderOut(nil)
+        window?.contentView = nil
+        window = nil
+        visible = false
+        lastRect = nil
+    }
+
     private func window(for screen: NSScreen) -> NSWindow {
         if let w = window, w.frame == screen.frame { return w }
         let w = window ?? {
-            let w = NSWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: true)
+            // A non-activating panel: the kind macOS lets onto every desktop,
+            // full-screen ones included.
+            let w = NSPanel(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+            w.isFloatingPanel = true
+            w.hidesOnDeactivate = false
+            w.becomesKeyOnlyIfNeeded = true
             w.isOpaque = false
             w.backgroundColor = .clear
             w.ignoresMouseEvents = true
