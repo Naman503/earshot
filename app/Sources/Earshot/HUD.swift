@@ -255,7 +255,7 @@ final class HUD {
         let end = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.scrollEnd = nil
-            self.findNext()  // back to the word being spoken now
+            self.findNext()
         }
         scrollEnd = end
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: end)
@@ -304,7 +304,7 @@ final class HUD {
         let locator: WordLocator
         let glide: Bool
         let dir: Int
-        let startY: CGFloat
+        var startY: CGFloat
         var sent: CGFloat = 0
         var frozen: Bool
         var last = Date()
@@ -426,7 +426,7 @@ final class HUD {
     }
 
     private func findNext() {
-        guard !busy, !gliding, scrollEnd == nil, let (word, next, locator) = pending else { return }
+        guard !busy, !gliding, let (word, next, locator) = pending else { return }
         pending = nil
         busy = true
         // Follow the reading by scrolling — unless you're scrolling (or paged)
@@ -435,6 +435,9 @@ final class HUD {
         if settings.autoScroll, userRecently { stats.waitedForYou += 1 }
         let mayScroll = settings.autoScroll && settings.highlightWords && sourceInFront && !userRecently
 
+        // While you're scrolling, the page keeps moving between measuring a
+        // word and drawing it: note how far the ride has gone, to correct by.
+        let sentBefore = (tracking?.glide == false) ? tracking?.sent : nil
         finder.async {
             let box = locator.locate(word, next: next)
             let view = box != nil && mayScroll ? locator.visibleArea() : nil
@@ -446,7 +449,16 @@ final class HUD {
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     self.busy = false
-                    if let box {
+                    if var box {
+                        if let before = sentBefore, var t = self.tracking, !t.glide {
+                            // Still scrolling: shift the measured box by what has
+                            // scrolled past meanwhile, and ride on from this word.
+                            box = box.offsetBy(dx: 0, dy: -(t.sent - before))
+                            t.startY = box.midY
+                            t.sent = 0
+                            t.probes = []
+                            self.tracking = t
+                        }
                         self.place(box)
                         if let view { self.lastView = view; self.follow(box, in: view, textEnd: end) }
                     } else { self.stats.missed += 1; self.missed() }
