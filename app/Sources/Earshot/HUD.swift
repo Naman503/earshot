@@ -126,7 +126,7 @@ final class HUD {
         let roomBelow = view.maxY - box.maxY
         let outOfSight = box.minY < view.minY + 2 || box.maxY > view.maxY - 2
         let nearBottom = roomBelow < gap * CGFloat(settings.autoScrollTrigger)
-        guard nearBottom || outOfSight else { return }
+        guard nearBottom || outOfSight, !glidesGaveUp else { return }
 
         // Scrolls go where the pointer is, so glide only with it resting over
         // the page; otherwise, once the word leaves the window, bring it into
@@ -145,7 +145,7 @@ final class HUD {
 
         let dy: CGFloat
         if outOfSight {
-            dy = box.midY - (view.minY + view.height * settings.autoScrollReturn)
+            dy = max(-view.height, min(view.height, box.midY - (view.minY + view.height * settings.autoScrollReturn)))
         } else {
             var want = min(gap * CGFloat(settings.autoScrollLines), view.height * 0.7)
             // Never past the end of the page: the full glide while there's
@@ -186,6 +186,12 @@ final class HUD {
                         Log.write("highlight: glide \(Int(dy)) px in \(String(format: "%.2f", duration)) s, text moved \(Int(moved)) px")
                         // Moved much less than asked: the page hit its end.
                         if abs(moved) < abs(dy) * 0.6 { self.pageStuck = true }
+                        // A big glide that did nothing: the page (or its measuring)
+                        // is broken — stop auto-scrolls until you scroll yourself.
+                        if abs(moved) < 10, abs(dy) > 150 {
+                            self.glidesGaveUp = true
+                            Log.write("highlight: that glide did nothing — no more auto-scrolls until you scroll")
+                        }
                         if self.sourceInFront, self.lastLocator === locator { self.marker.show(now) }
                     }
                 }
@@ -212,6 +218,9 @@ final class HUD {
     /// Set when a glide didn't move the page; cleared by your own scrolling
     /// or a new reading.
     private var pageStuck = false
+    /// Set when a large glide provably moved nothing: no more auto-scrolls
+    /// this reading until you scroll yourself.
+    private var glidesGaveUp = false
 
     /// When you last scrolled or paged yourself (auto-scroll waits after it).
     private var lastUserScroll = Date.distantPast
@@ -251,6 +260,7 @@ final class HUD {
             return
         }
         pageStuck = false
+        glidesGaveUp = false
         scrollEnd?.cancel()
         let end = DispatchWorkItem { [weak self] in
             guard let self else { return }
@@ -310,6 +320,9 @@ final class HUD {
         /// How much of each scrolled pixel the page really moves (1 normally,
         /// falling to 0 at the page's end), learned from the checks.
         var ratio: CGFloat = 1
+        /// Marker shift applied so far, and page movement the checks confirmed.
+        var shown: CGFloat = 0
+        var verified: CGFloat = 0
         var frozen: Bool
         var last = Date()
         /// (moved so far as measured, sent so far when measured), newest last.
@@ -323,7 +336,7 @@ final class HUD {
         // Stuck this way last time: hold still until a check shows it moves.
         tracking = Tracking(locator: locator, glide: glide, dir: dir, startY: y, frozen: scrollEdge == dir)
         guard trackTimer == nil else { return }
-        let t = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+        let t = Timer(timeInterval: 0.04, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.probeTracking() }
         }
         RunLoop.main.add(t, forMode: .common)
@@ -334,7 +347,15 @@ final class HUD {
         guard var t = tracking else { marker.shift(by: dy); return }
         t.sent += dy
         t.last = Date()
-        if !t.frozen, t.ratio > 0.02 { marker.shift(by: dy * t.ratio) }
+        if !t.frozen, t.ratio > 0.02 {
+            // Ride along, but never run more than ~a line and a half past what
+            // the checks have confirmed the page really did: a flick at the
+            // page's end then barely moves the marker instead of flinging it.
+            let want = t.shown + dy * t.ratio
+            let capped = max(t.verified - 36, min(t.verified + 36, want))
+            marker.shift(by: capped - t.shown)
+            t.shown = capped
+        }
         tracking = t
     }
 
@@ -342,7 +363,12 @@ final class HUD {
     private func probeTracking() {
         guard let t = tracking else { trackTimer?.invalidate(); trackTimer = nil; return }
         // Your swipe has ended (no steps for a while): the settle check takes over.
-        if !t.glide, Date().timeIntervalSince(t.last) > 0.4 { tracking = nil; return }
+        if !t.glide, Date().timeIntervalSince(t.last) > 0.4 {
+            // A ride the page mostly ignored marks this end of the page.
+            if abs(t.sent) > 30, t.ratio < 0.3 { scrollEdge = t.dir }
+            tracking = nil
+            return
+        }
         guard !probing else { return }
         probing = true
         let locator = t.locator
@@ -362,6 +388,16 @@ final class HUD {
                         let dSent = p[p.count - 1].sent - p[p.count - 2].sent
                         let dMoved = p[p.count - 1].moved - p[p.count - 2].moved
                         if abs(dSent) > 6 { t.ratio = max(0, min(1, dMoved / dSent)) }
+                        if t.ratio > 0.7 { self.scrollEdge = 0 }
+                    }
+                    t.verified = moved
+                    // Let the ride catch up to confirmed movement it was holding back.
+                    if !t.frozen {
+                        let catchUp = max(-40, min(40, moved - t.shown))
+                        if abs(catchUp) > 2 {
+                            self.marker.shift(by: catchUp)
+                            t.shown += catchUp
+                        }
                     }
                     if t.frozen {
                         // New text arrived, or the page frees up: follow again from here.
@@ -468,6 +504,8 @@ final class HUD {
                             box = box.offsetBy(dx: 0, dy: -(t.sent - before) * (t.frozen ? 0 : t.ratio))
                             t.startY = box.midY
                             t.sent = 0
+                            t.shown = 0
+                            t.verified = 0
                             t.probes = []
                             self.tracking = t
                         }
@@ -499,6 +537,7 @@ final class HUD {
         pending = nil
         lastLocator = nil
         pageStuck = false
+        glidesGaveUp = false
         ocrStale = false
         lastView = nil
         tracking = nil
