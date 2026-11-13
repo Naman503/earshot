@@ -101,7 +101,7 @@ final class HUD {
         pending = (word, next, locator)
         if lastLocator !== locator { ocrStale = false }
         lastLocator = locator
-        if scrollEnd == nil { findNext() }
+        findNext()  // even while you scroll: the highlight follows the voice
     }
 
     private var lastLocator: WordLocator?
@@ -281,8 +281,9 @@ final class HUD {
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     self.busy = false
-                    if let box, self.sourceInFront { self.marker.show(box) }
-                    if self.scrollEnd == nil { self.findNext() }
+                    // Only between words: a fresher word may have been placed since.
+                    if let box, self.sourceInFront, self.pending == nil { self.marker.show(box) }
+                    self.findNext()
                 }
             }
         }
@@ -419,7 +420,7 @@ final class HUD {
                 MainActor.assumeIsolated {
                     self.busy = false
                     if let box, self.sourceInFront, self.lastLocator === locator { self.marker.show(box) }
-                    if self.scrollEnd == nil { self.findNext() }
+                    self.findNext()
                 }
             }
         }
