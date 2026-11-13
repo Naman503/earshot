@@ -87,6 +87,10 @@ final class Settings: ObservableObject {
     @Published var duckLevel: Double { didSet { save("duckLevel", duckLevel) } }
     /// What a playing video does while a notification is read out.
     @Published var notificationMediaPolicy: NotificationMediaPolicy { didSet { save("notificationMediaPolicy", notificationMediaPolicy.rawValue) } }
+    /// The Kokoro voice for Hindi (Devanagari) text; empty = use the main voice.
+    @Published var hindiVoice: String { didSet { save("hindiVoice", hindiVoice) } }
+    /// Clicking a word while reading jumps the voice there.
+    @Published var clickToJump: Bool { didSet { save("clickToJump", clickToJump) } }
     /// Pause reading (instead of stopping) when headphones disconnect mid-read.
     @Published var pauseOnDisconnect: Bool { didSet { save("pauseOnDisconnect", pauseOnDisconnect) } }
 
@@ -201,6 +205,8 @@ final class Settings: ObservableObject {
         mediaPolicy = MediaPolicy(rawValue: d.string(forKey: "mediaPolicy") ?? "") ?? .duck
         duckLevel = d.object(forKey: "duckLevel") as? Double ?? 0.2
         notificationMediaPolicy = NotificationMediaPolicy(rawValue: d.string(forKey: "notificationMediaPolicy") ?? "") ?? .same
+        hindiVoice = d.string(forKey: "hindiVoice") ?? "hf_alpha"
+        clickToJump = d.object(forKey: "clickToJump") as? Bool ?? true
         pauseOnDisconnect = d.object(forKey: "pauseOnDisconnect") as? Bool ?? true
         gesturesEnabled = d.object(forKey: "gesturesEnabled") as? Bool ?? true
         escapeStops = d.object(forKey: "escapeStops") as? Bool ?? true

@@ -237,6 +237,18 @@ private struct VoiceTab: View {
                         }
                     }
                 }
+                Section {
+                    Picker("Hindi text", selection: $settings.hindiVoice) {
+                        Text("Alpha (female)").tag("hf_alpha")
+                        Text("Beta (female)").tag("hf_beta")
+                        Text("Omega (male)").tag("hm_omega")
+                        Text("Psi (male)").tag("hm_psi")
+                        Text("Use the main voice").tag("")
+                    }
+                } footer: {
+                    Text("Paragraphs that are mostly Devanagari are spoken by this Hindi voice; everything else keeps the voice above. The first Hindi sentence after a launch takes a moment longer.")
+                        .font(.caption)
+                }
             } else {
                 Picker("Voice", selection: $settings.appleVoiceID) {
                     Text("Best available").tag("")
@@ -924,6 +936,7 @@ private struct HighlightTab: View {
                 Toggle("Highlight each word on the page as it's spoken", isOn: $settings.highlightWords)
                 Toggle("Also highlight it in the now-reading bar", isOn: $settings.highlightWordsInBar)
                 Toggle("Briefly light up the whole paragraph when reading starts", isOn: $settings.flashParagraph)
+                Toggle("Clicking a word jumps the voice there", isOn: $settings.clickToJump)
             } footer: {
                 Text("Short words are lit together with the next one. Works in browsers, Electron apps like Claude, and Mac text views.")
                     .font(.caption)

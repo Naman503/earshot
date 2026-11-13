@@ -204,7 +204,7 @@ final class MacDictation {
                             t.invalidate()
                             self.expected = nil
                             Log.write("mac-dictation: listening after \(Int(elapsed * 1000)) ms\(step > 0 ? " (fixed)" : "")")
-                            self.follow()
+                            self.confirmAlive(step: step)
                         } else if menuOn {
                             seenOn = true
                             if elapsed > (step == 0 ? 1.6 : 2.5) {
@@ -236,6 +236,42 @@ final class MacDictation {
                             self.press(starting: false)
                             self.isOn = false
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The microphone opened, but dictation sometimes drops it again within a
+    /// second or two while its icon stays up — it looks like it's listening, but
+    /// nothing you say is written. Watch the first seconds; if the mic closes
+    /// while the menu still says dictation is on, turn it off and on for you.
+    private func confirmAlive(step: Int) {
+        isOn = true
+        check?.invalidate()
+        checkID += 1
+        let id = checkID
+        let started = Date()
+        check = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] t in
+            MainActor.assumeIsolated {
+                guard let self, id == self.checkID else { t.invalidate(); return }
+                self.probe { hearing, menuOn in
+                    guard id == self.checkID, t.isValid else { return }
+                    if hearing {
+                        if Date().timeIntervalSince(started) > 2.4 { t.invalidate(); self.follow() }
+                    } else if menuOn {
+                        t.invalidate()
+                        guard step < 2 else {
+                            Log.write("mac-dictation: mic keeps closing, giving up")
+                            self.reader.flash("Dictation isn't hearing you — press the 🎤 key again")
+                            return
+                        }
+                        Log.write("mac-dictation: mic closed right after starting (icon still on) — turning it off and on")
+                        self.recover(step: step)
+                    } else {
+                        // Both gone: you stopped it yourself.
+                        t.invalidate()
+                        self.isOn = false
                     }
                 }
             }

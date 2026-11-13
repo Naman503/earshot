@@ -344,6 +344,48 @@ final class Reader: ObservableObject {
         }
     }
 
+    /// The voice for one chunk: Devanagari text gets the Hindi voice, if chosen.
+    private func voice(for text: String) -> String {
+        guard !settings.hindiVoice.isEmpty, Self.mostlyDevanagari(text) else { return settings.voice }
+        return settings.hindiVoice
+    }
+
+    static func mostlyDevanagari(_ text: String) -> Bool {
+        var hindi = 0, letters = 0
+        for u in text.unicodeScalars where CharacterSet.letters.contains(u) {
+            letters += 1
+            if (0x0900...0x097F).contains(u.value) { hindi += 1 }
+        }
+        return letters > 0 && hindi * 3 > letters
+    }
+
+    /// Jumps to the sentence whose text starts with `snippet` (from a click on
+    /// the page). Returns false when no sentence matches.
+    func jump(toTextNear snippet: String) -> Bool {
+        guard isActive, !chunks.isEmpty else { return false }
+        let want = Self.normalizedWords(snippet)
+        guard want.count >= 2 else { return false }
+        // The sentence that contains the first clicked words, nearest first.
+        let order = chunks.indices.sorted { abs($0 - index) < abs($1 - index) }
+        for i in order {
+            let have = Self.normalizedWords(chunks[i])
+            guard !have.isEmpty else { continue }
+            for start in have.indices.dropLast(min(1, have.count - 1)) where have[start] == want[0] {
+                let n = min(want.count, have.count - start, 3)
+                if n >= 2, Array(have[start..<start + n]) == Array(want[0..<n]) {
+                    Log.write("read: jumped to sentence \(i + 1) (clicked “\(snippet.prefix(30))…”)")
+                    restartAt(i, on: nil)
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    private static func normalizedWords(_ s: String) -> [String] {
+        s.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).map { normalizedWord(String($0)) }.filter { !$0.isEmpty }
+    }
+
     func skip(_ delta: Int) {
         guard isActive, !chunks.isEmpty else { return }
         restartAt(max(0, min(chunks.count - 1, index + delta)), on: nil)
@@ -639,7 +681,7 @@ final class Reader: ObservableObject {
         Task {
             let result: SpeechAudio?
             if kokoroSession {
-                result = await kokoro.synthesize(text, voice: settings.voice, stretch: primary, also: also).result.value
+                result = await kokoro.synthesize(text, voice: voice(for: text), stretch: primary, also: also).result.value
             } else {
                 result = await apple.synthesize(text, voiceID: settings.appleVoiceID, speed: 1)
             }
@@ -657,7 +699,7 @@ final class Reader: ObservableObject {
                     // speeds follow in the background for instant switches.
                     let others = Array(Set(modeSpeeds.values.filter { abs($0 - primary) > 0.01 }))
                     Task {
-                        guard let more = await kokoro.synthesize(text, voice: settings.voice, stretch: others[0], also: Array(others.dropFirst())).result.value,
+                        guard let more = await kokoro.synthesize(text, voice: voice(for: text), stretch: others[0], also: Array(others.dropFirst())).result.value,
                               id == readID, chunks.indices.contains(i), chunks[i] == text else { return }
                         var all = more.alternates
                         all[others[0]] = more

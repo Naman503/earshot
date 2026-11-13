@@ -92,7 +92,7 @@ def list_voices(model_path):
     if not os.path.isdir(folder):
         return []
     names = [f.rsplit(".", 1)[0] for f in os.listdir(folder) if f.endswith((".safetensors", ".pt", ".npy"))]
-    # Only English pipelines are installed (misaki[en]).
+    # English voices for the picker; Hindi (hf_/hm_) is chosen per paragraph by the app.
     return sorted(n for n in set(names) if n[:1] in ("a", "b"))
 
 

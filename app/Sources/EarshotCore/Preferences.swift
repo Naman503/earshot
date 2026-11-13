@@ -6,6 +6,7 @@ public enum ReadAction: String, CaseIterable, Codable, Sendable, Identifiable {
     case clipboard, readAgain
     case pauseResume, stop, nextSentence, previousSentence, nextParagraph, previousParagraph, faster, slower, boost
     case readNotification, summarize, autoReadToggle, dictate
+    case slowMode
     case none
 
     public var id: String { rawValue }
@@ -31,6 +32,7 @@ public enum ReadAction: String, CaseIterable, Codable, Sendable, Identifiable {
         case .faster: "Speed up"
         case .slower: "Slow down"
         case .boost: "Boost speed: tap to switch, hold for a burst"
+        case .slowMode: "Slow speed: tap to switch on / off"
         case .readNotification: "Read the latest notification (or answer yes)"
         case .summarize: "Summarize the page (or selection), then offer to read it"
         case .autoReadToggle: "Auto-read new text on this page (on / off)"

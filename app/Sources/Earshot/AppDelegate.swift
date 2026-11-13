@@ -231,6 +231,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .boost:
             boostPressedAt = Date()
             reader.setBoost(!reader.boosted)
+        case .slowMode:
+            reader.setSpeedMode(reader.speedMode == .slow ? .normal : .slow)
         case .readNotification: announcer.readLatestOrAnswer()
         case .summarize: summarize()
         case .autoReadToggle: pageWatcher.togglePin()

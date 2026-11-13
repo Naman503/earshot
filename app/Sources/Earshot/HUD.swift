@@ -44,6 +44,10 @@ final class HUD {
         scrollMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.scrollWheel, .leftMouseDragged]) { [weak self] e in
             MainActor.assumeIsolated { self?.pageMoved(e) }
         }
+        // A click on a word while reading jumps the voice there.
+        clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] e in
+            MainActor.assumeIsolated { self?.clicked(e) }
+        }
         // Paging with the keyboard (Page Up/Down, arrows, Space, Home/End) is you
         // moving the page too: auto-scroll waits.
         keyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] e in
@@ -95,6 +99,7 @@ final class HUD {
             return
         }
         pending = (word, next, locator)
+        if lastLocator !== locator { ocrStale = false }
         lastLocator = locator
         if scrollEnd == nil { findNext() }
     }
@@ -212,11 +217,39 @@ final class HUD {
     private var lastUserScroll = Date.distantPast
     private var lastAutoScroll = Date.distantPast
     private var keyMonitor: Any?
+    private var clickMonitor: Any?
+
+    /// A plain click on a word of the page being read: the voice jumps there.
+    private func clicked(_ e: NSEvent) {
+        guard settings.clickToJump, settings.highlightWords, reader.isActive, sourceInFront,
+              e.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
+              e.clickCount == 1, let locator = lastLocator,
+              let point = CGEvent(source: nil)?.location else { return }
+        // Only clicks on the page being read (OCR words hit-test themselves).
+        if let view = lastView, !view.contains(point) { return }
+        finder.async {
+            guard let snippet = locator.textNear(point: point) else { return }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard self.lastLocator === locator else { return }
+                    _ = self.reader.jump(toTextNear: snippet)
+                }
+            }
+        }
+    }
 
     private func pageMoved(_ e: NSEvent) {
         // Earshot's own smooth scrolling isn't you taking over.
         if e.cgEvent?.getIntegerValueField(.eventSourceUserData) == SmoothScroller.tag { return }
         lastUserScroll = Date()
+        // OCR boxes come from one screenshot: once the page moves they're wrong,
+        // so the highlight bows out for the rest of this reading.
+        if lastLocator?.tracksScrolling == false {
+            if !ocrStale { Log.write("highlight: page scrolled during an OCR reading — hiding the highlight") }
+            ocrStale = true
+            marker.hide()
+            return
+        }
         pageStuck = false
         scrollEnd?.cancel()
         let end = DispatchWorkItem { [weak self] in
@@ -229,9 +262,10 @@ final class HUD {
         // Your own scroll over the page being read: move the highlight by the
         // same amount in the same moment (the app reports new text positions
         // only a beat later), then measure once the page settles.
-        if e.type == .scrollWheel, e.hasPreciseScrollingDeltas, let view = lastView,
+        if e.type == .scrollWheel, let view = lastView,
            view.contains(CGEvent(source: nil)?.location ?? .zero), sourceInFront {
-            followUserScroll(-e.scrollingDeltaY)
+            // A mouse wheel reports lines, not pixels: ride it all the same.
+            followUserScroll(e.hasPreciseScrollingDeltas ? -e.scrollingDeltaY : -e.scrollingDeltaY * 18)
             settleAfterScroll?.cancel()
             let settle = DispatchWorkItem { [weak self] in self?.remeasureMarker() }
             settleAfterScroll = settle
@@ -326,7 +360,15 @@ final class HUD {
                             self.scrollEdge = 0
                             if self.sourceInFront { self.marker.show(now) }
                         }
-                    } else if p.count >= 3 {
+                    } else if p.count >= 2, abs(p[p.count - 1].moved - p[p.count - 2].moved) < 2,
+                              abs(p[p.count - 1].sent - p[p.count - 2].sent) < 2 {
+                        // The page and your fingers are both still: trust the
+                        // measurement and settle the highlight exactly on the word.
+                        if let cur = self.marker.currentRect, abs(cur.midY - now.midY) > 3, self.sourceInFront {
+                            self.marker.show(now)
+                        }
+                    }
+                    if !t.frozen, p.count >= 3 {
                         // Three checks in a row where the text didn't budge while
                         // steps kept coming: the page has stopped.
                         let a = p[p.count - 3], b = p[p.count - 1]
@@ -433,6 +475,7 @@ final class HUD {
         pending = nil
         lastLocator = nil
         pageStuck = false
+        ocrStale = false
         lastView = nil
         tracking = nil
         scrollEdge = 0
@@ -448,7 +491,11 @@ final class HUD {
         return NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
     }
 
+    /// True once the page scrolled during an OCR reading (boxes are stale).
+    private var ocrStale = false
+
     private func place(_ rect: CGRect) {
+        guard !ocrStale else { stats.hidden += 1; return }
         missedSince = nil
         guard sourceInFront else {
             if stats.hidden == 0 {

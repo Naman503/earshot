@@ -36,6 +36,11 @@ protocol WordLocator: AnyObject, Sendable {
     /// Scrolls the page so the last word found stays comfortably in view.
     /// Returns true when it scrolled.
     func scrollToKeepVisible() -> Bool
+    /// Whether word boxes stay correct while the page scrolls (OCR boxes don't).
+    var tracksScrolling: Bool { get }
+    /// About 80 characters of the page's text starting at the word under `point`
+    /// (for click-to-jump), or nil when no word is there.
+    func textNear(point: CGPoint) -> String?
 }
 
 /// Letters and digits only, lowercased: "Earshot's," → "earshots".
@@ -889,32 +894,42 @@ final class TextGrabber {
     // MARK: OCR fallback
 
     private func ocrGrab(_ unit: GrabUnit, at point: CGPoint) async -> Grab? {
-        guard let (image, windowFrame) = await captureWindow(at: point) else { return nil }
+        guard let (image, windowFrame, pid) = await captureWindow(at: point) else { return nil }
         let lines = await recognize(image, in: windowFrame)
         let blocks = OCRLayout.blocks(lines)
         guard !blocks.isEmpty else { return nil }
+        func locator(_ chosen: ArraySlice<OCRLayout.Block>) -> OCRLocator {
+            OCRLocator(lines: chosen.flatMap(\.lines), pid: pid)
+        }
         if unit == .window || unit == .visible {
-            return Grab(text: blocks.map(\.text).joined(separator: "\n"), frame: windowFrame, source: "OCR")
+            return Grab(text: blocks.map(\.text).joined(separator: "\n"), frame: windowFrame, source: "OCR",
+                        locator: locator(blocks[...]))
         }
         guard let i = OCRLayout.blockIndex(at: point, in: blocks) else { return nil }
         switch unit {
         case .fromHere:
-            return Grab(text: blocks[i...].map(\.text).joined(separator: "\n"), frame: blocks[i].rect, source: "OCR")
+            return Grab(text: blocks[i...].map(\.text).joined(separator: "\n"), frame: blocks[i].rect, source: "OCR",
+                        locator: locator(blocks[i...]))
         case .section:
             let r = OCRLayout.sectionRange(blocks, around: i)
             let rect = blocks[r].dropFirst().reduce(blocks[r.lowerBound].rect) { $0.union($1.rect) }
-            return Grab(text: blocks[r].map(\.text).joined(separator: "\n"), frame: rect, source: "OCR")
+            return Grab(text: blocks[r].map(\.text).joined(separator: "\n"), frame: rect, source: "OCR",
+                        locator: locator(blocks[r]))
         case .sentence:
-            return Grab(text: TextUnits.substring(.sentence, in: blocks[i].text, at: 0), frame: blocks[i].rect, source: "OCR")
+            return Grab(text: TextUnits.substring(.sentence, in: blocks[i].text, at: 0), frame: blocks[i].rect, source: "OCR",
+                        locator: locator(blocks[i...i]))
         default:
+            // The reading may expand to neighbouring paragraphs, so the word
+            // boxes cover the whole page; the first match finds its own start.
             return Grab(text: blocks[i].text, frame: blocks[i].rect, source: "OCR",
                         before: blocks[..<i].map(\.text).joined(separator: "\n"),
-                        after: blocks[(i + 1)...].map(\.text).joined(separator: "\n"))
+                        after: blocks[(i + 1)...].map(\.text).joined(separator: "\n"),
+                        locator: locator(blocks[...]))
         }
     }
 
     /// Screenshot of the topmost normal window under the pointer.
-    private func captureWindow(at point: CGPoint) async -> (CGImage, CGRect)? {
+    private func captureWindow(at point: CGPoint) async -> (CGImage, CGRect, pid_t)? {
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
             let me = ProcessInfo.processInfo.processIdentifier
@@ -930,7 +945,7 @@ final class TextGrabber {
             config.showsCursor = false
             let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
             await MainActor.run { Permissions.shared.markScreenRecordingGranted() }
-            return (image, window.frame)
+            return (image, window.frame, window.owningApplication?.processID ?? 0)
         } catch {
             Log.write("grab: screen capture failed: \(error.localizedDescription)")
             return nil
@@ -1198,6 +1213,32 @@ final class TextRunLocator: WordLocator, @unchecked Sendable {
     /// "scroll into view", which handles nested scroll areas like Claude's docs.
     func visibleArea() -> CGRect? { viewport() }
 
+    var tracksScrolling: Bool { true }
+
+    /// The page text from the word you clicked: hit the text line under the
+    /// point, then find which word's box holds it.
+    func textNear(point: CGPoint) -> String? {
+        guard loaded else { return nil }
+        for run in runs {
+            guard run.length > 0, let f = grabber.elementFrame(run.element), f.insetBy(dx: -2, dy: -2).contains(point) else { continue }
+            var hit: Int?
+            var looked = 0
+            text.enumerateSubstrings(in: NSRange(location: run.start, length: run.length), options: .byWords) { _, r, _, stop in
+                looked += 1
+                if looked > 600 { stop.pointee = true; return }
+                let local = NSRange(location: r.location - run.start, length: r.length)
+                if let b = self.grabber.textBounds(run.element, local), b.insetBy(dx: -1, dy: -2).contains(point) {
+                    hit = r.location
+                    stop.pointee = true
+                }
+            }
+            if let at = hit {
+                return text.substring(with: NSRange(location: at, length: min(90, text.length - at)))
+            }
+        }
+        return nil
+    }
+
     func pageBottom(below view: CGRect) -> CGFloat? {
         guard loaded, let el = runs.last?.element else { return nil }
         // The reading's own column, so side panels and pop-ups don't count.
@@ -1440,5 +1481,70 @@ extension TextGrabber {
               let r = paramValue(web, "AXTextMarkerRangeForUIElement", attrElement(el, kAXParentAttribute) ?? el),
               let text = paramString(web, "AXStringForTextMarkerRange", r) else { return nil }
         return (webLocator(web: web, start: AXTextMarkerRangeCopyStartMarker(r as! AXTextMarkerRange), element: el, wholePage: false), text)
+    }
+}
+
+/// Word highlight for OCR readings: Vision gives a box per printed line, and
+/// each word's share of its line gives a close-enough box for the marker.
+/// The boxes come from one screenshot, so they can't follow scrolling — the
+/// highlight hides if the page moves.
+final class OCRLocator: WordLocator, @unchecked Sendable {
+    private struct Word { let norm: String; let rect: CGRect; let textAfter: String }
+    private let words: [Word]
+    private var cursor = 0
+    private var found = false
+    private var lastBox: CGRect?
+    let pid: pid_t
+
+    init(lines: [OCRLayout.Line], pid: pid_t) {
+        self.pid = pid
+        var out: [Word] = []
+        for (li, line) in lines.enumerated() {
+            let parts = line.text.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+            let total = max(line.text.count, 1)
+            var consumed = 0
+            for (i, part) in parts.enumerated() {
+                let share = line.rect.width / CGFloat(total)
+                let x = line.rect.minX + CGFloat(consumed) * share
+                let w = max(CGFloat(part.count) * share, 8)
+                let after = (parts[i...].joined(separator: " ") + " " + lines[(li + 1)...].prefix(2).map(\.text).joined(separator: " ")).prefix(90)
+                out.append(Word(norm: normalizedWord(part), rect: CGRect(x: x, y: line.rect.minY, width: w, height: line.rect.height),
+                                textAfter: String(after)))
+                consumed += part.count + 1
+            }
+        }
+        words = out
+    }
+
+    func locate(_ phrase: String, next: String) -> CGRect? {
+        let wanted = phrase.split(separator: " ").map { normalizedWord(String($0)) }.filter { !$0.isEmpty }
+        guard let first = wanted.first else { return nil }
+        // Until the first match, the reading may have started anywhere on the page.
+        let window = found ? min(cursor + 30, words.count) : words.count
+        for i in cursor..<window where words[i].norm == first {
+            var box = words[i].rect
+            var j = i
+            for w in wanted.dropFirst() {
+                guard j + 1 < words.count, words[j + 1].norm == w else { break }
+                j += 1
+                if abs(words[j].rect.midY - box.midY) < box.height { box = box.union(words[j].rect) }
+            }
+            cursor = j + 1
+            found = true
+            lastBox = box
+            return box
+        }
+        return nil
+    }
+
+    func remeasure() -> CGRect? { lastBox }
+    func visibleArea() -> CGRect? { nil }
+    func pageBottom(below view: CGRect) -> CGFloat? { nil }
+    func scrollToKeepVisible() -> Bool { false }
+    var tracksScrolling: Bool { false }
+    var debugView: String { "OCR boxes: \(words.count) words, cursor \(cursor)" }
+
+    func textNear(point: CGPoint) -> String? {
+        words.first { $0.rect.insetBy(dx: -1, dy: -2).contains(point) }?.textAfter
     }
 }
