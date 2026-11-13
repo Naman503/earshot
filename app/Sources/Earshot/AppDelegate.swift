@@ -176,17 +176,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Logs whenever the app is slow to respond (main thread busy > 0.3 s), so
     /// a freeze leaves a trace of what was happening around it.
     private func watchForStalls() {
-        let timer = DispatchSource.makeTimerSource(queue: stallQueue)
-        timer.schedule(deadline: .now() + 2, repeating: 2, leeway: .milliseconds(200))
-        timer.setEventHandler {
-            let sent = Date()
-            DispatchQueue.main.async {
-                let lag = Date().timeIntervalSince(sent)
-                if lag > 0.3 { Log.write("stall: the app was busy for \(Int(lag * 1000)) ms") }
-            }
+        // A .common-mode timer keeps firing while a menu is open, so tracking
+        // time doesn't count; a genuinely blocked main thread still delays it.
+        var last = Date()
+        let t = Timer(timeInterval: 2, repeats: true) { _ in
+            let now = Date()
+            let lag = now.timeIntervalSince(last) - 2
+            if lag > 0.3 { Log.write("stall: the app was busy for \(Int(lag * 1000)) ms") }
+            last = now
         }
-        timer.resume()
-        stallTimer = timer
+        t.tolerance = 0.1
+        RunLoop.main.add(t, forMode: .common)
     }
 
     private var boostPressedAt = Date.distantPast
@@ -339,25 +339,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-        let status: String = switch kokoro.status {
-        case .ready: "Kokoro voice ready"
-        case .starting: "Kokoro starting… (Apple voice meanwhile)"
-        case .asleep: "Kokoro asleep (memory freed) — wakes when you read"
-        case .notInstalled: "Kokoro not installed — using Apple voice"
-        case .failed(let m): "Kokoro failed: \(m)"
-        }
-        menu.addItem(withTitle: status, action: nil, keyEquivalent: "").isEnabled = false
+        // The live card: status, progress, playback controls, quick speed.
+        let header = NSMenuItem()
+        let card = NSHostingView(rootView: MenuHeader(reader: reader, kokoro: kokoro, settings: settings,
+                                                      output: audio.target(settings: settings)?.name))
+        card.setFrameSize(card.fittingSize)
+        header.view = card
+        menu.addItem(header)
         menu.addItem(.separator())
-        for action: ReadAction in [.smartRead, .section, .fromHere, .visible, .window, .summarize] {
-            add(menu, action.title, action)
-        }
-        add(menu, "Start Mac dictation", .dictate)
+        add(menu, "Read under the pointer", .smartRead)
+        add(menu, "Read the clipboard", .clipboard)
+        add(menu, "Summarize this page", .summarize)
         add(menu, pageWatcher.pinnedTitle.map { "Stop auto-reading “\($0.prefix(40))”" } ?? "Auto-read new text on this page", .autoReadToggle)
-        if reader.isActive {
-            menu.addItem(.separator())
-            add(menu, reader.state == .paused ? "Resume" : "Pause", .pauseResume)
-            add(menu, "Stop", .stop)
+        let more = NSMenuItem(title: "More ways to read", action: nil, keyEquivalent: "")
+        let moreMenu = NSMenu()
+        for action: ReadAction in [.section, .fromHere, .visible, .window] {
+            add(moreMenu, action.title, action)
         }
+        add(moreMenu, "Start Mac dictation", .dictate)
+        more.submenu = moreMenu
+        menu.addItem(more)
         if !reader.history.isEmpty {
             let recent = NSMenuItem(title: "Recently read", action: nil, keyEquivalent: "")
             let sub = NSMenu()
@@ -384,21 +385,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(recent)
         }
         menu.addItem(.separator())
-        let speed = NSMenuItem(title: String(format: "Speed: %.2g×", settings.speed), action: nil, keyEquivalent: "")
-        let speeds = NSMenu()
-        for s in [1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 3.0] {
-            let item = NSMenuItem(title: String(format: "%.3g×", s), action: #selector(setSpeed(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = s
-            item.state = abs(settings.speed - s) < 0.01 ? .on : .off
-            speeds.addItem(item)
-        }
-        speed.submenu = speeds
-        menu.addItem(speed)
-        let device = audio.target(settings: settings)
-        menu.addItem(withTitle: device.map { "Output: \($0.name)" } ?? "Output: none allowed (\(settings.outputPolicy == .headphonesOnly ? "connect headphones" : "check Settings"))",
-                     action: nil, keyEquivalent: "").isEnabled = false
-        menu.addItem(.separator())
         let s = NSMenuItem(title: "Settings…", action: #selector(openSettingsMenu), keyEquivalent: ",")
         s.target = self
         menu.addItem(s)
@@ -409,9 +395,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let item = NSMenuItem(title: title, action: #selector(menuAction(_:)), keyEquivalent: "")
         item.target = self
         item.representedObject = action.rawValue
-        if let combo = settings.shortcuts[action] {
-            item.title += "    " + HotKeys.describe(combo)
-        }
         menu.addItem(item)
     }
 
@@ -797,6 +780,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         let t = Date()
                         let web = self.grabber.webAreaFrame(of: el) ?? v
                         Log.write("room-test: page bottom below \(web): \(self.grabber.pageBottom(from: el, below: web, column: self.grabber.elementFrame(el).map { $0.minX...$0.maxX }).map { "\($0)" } ?? "none") in \(Int(Date().timeIntervalSince(t) * 1000)) ms")
+                    }
+                }
+            case "--menu-shot":
+                // Renders the menu-bar popup card to a PNG (layout check).
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    let card = NSHostingView(rootView: MenuHeader(reader: self.reader, kokoro: self.kokoro, settings: self.settings,
+                                                                  output: "OnePlus Buds 4").background(Color(red: 0.15, green: 0.15, blue: 0.16)))
+                    card.setFrameSize(card.fittingSize)
+                    let w = NSWindow(contentRect: NSRect(origin: CGPoint(x: -20000, y: -20000), size: card.fittingSize),
+                                     styleMask: .borderless, backing: .buffered, defer: false)
+                    w.appearance = NSAppearance(named: .darkAqua)
+                    w.contentView = card
+                    w.orderBack(nil)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                        let rep = card.bitmapImageRepForCachingDisplay(in: card.bounds)!
+                        card.cacheDisplay(in: card.bounds, to: rep)
+                        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: value))
+                        Log.write("menu-shot: \(card.fittingSize) saved \(value)")
+                        w.orderOut(nil)
                     }
                 }
             case "--marker-looks":
