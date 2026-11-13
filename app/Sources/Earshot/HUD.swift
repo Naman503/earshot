@@ -307,6 +307,9 @@ final class HUD {
         let dir: Int
         var startY: CGFloat
         var sent: CGFloat = 0
+        /// How much of each scrolled pixel the page really moves (1 normally,
+        /// falling to 0 at the page's end), learned from the checks.
+        var ratio: CGFloat = 1
         var frozen: Bool
         var last = Date()
         /// (moved so far as measured, sent so far when measured), newest last.
@@ -331,7 +334,7 @@ final class HUD {
         guard var t = tracking else { marker.shift(by: dy); return }
         t.sent += dy
         t.last = Date()
-        if !t.frozen { marker.shift(by: dy) }
+        if !t.frozen, t.ratio > 0.02 { marker.shift(by: dy * t.ratio) }
         tracking = t
     }
 
@@ -354,10 +357,17 @@ final class HUD {
                     t.probes.append((moved, sentNow))
                     if t.probes.count > 4 { t.probes.removeFirst() }
                     let p = t.probes
+                    // How much the page followed the last stretch of scrolling.
+                    if p.count >= 2 {
+                        let dSent = p[p.count - 1].sent - p[p.count - 2].sent
+                        let dMoved = p[p.count - 1].moved - p[p.count - 2].moved
+                        if abs(dSent) > 6 { t.ratio = max(0, min(1, dMoved / dSent)) }
+                    }
                     if t.frozen {
                         // New text arrived, or the page frees up: follow again from here.
                         if p.count >= 2, abs(p[p.count - 1].moved - p[p.count - 2].moved) > 4 {
                             t.frozen = false
+                            t.ratio = 1
                             self.scrollEdge = 0
                             if self.sourceInFront { self.marker.show(now) }
                         }
@@ -453,8 +463,9 @@ final class HUD {
                     if var box {
                         if let before = sentBefore, var t = self.tracking, !t.glide {
                             // Still scrolling: shift the measured box by what has
-                            // scrolled past meanwhile, and ride on from this word.
-                            box = box.offsetBy(dx: 0, dy: -(t.sent - before))
+                            // really scrolled past meanwhile (none at the page's
+                            // end, however far the fingers went), and ride on.
+                            box = box.offsetBy(dx: 0, dy: -(t.sent - before) * (t.frozen ? 0 : t.ratio))
                             t.startY = box.midY
                             t.sent = 0
                             t.probes = []
