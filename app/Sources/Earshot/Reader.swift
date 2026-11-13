@@ -151,6 +151,7 @@ final class Reader: ObservableObject {
             return false
         }
         Log.write("read: \(parts.count) chunks from \(source), \(text.count) chars")
+        readingNotification = source.hasPrefix("notification")
         // What exactly is being read, so a line that seems skipped can be checked:
         // the full text, with technical lines (read fast) marked.
         let marked = mapped.map { ($0.technical ? "[fast] " : "") + $0.text }.joined(separator: "\n")
@@ -181,7 +182,23 @@ final class Reader: ObservableObject {
                         locator: locator, paragraphOf: paragraphOf)
     }
 
+    /// True while a notification is being read out (they may pause or duck
+    /// a playing video differently from ordinary readings).
+    private var readingNotification = false
+
+    /// The media policy for what's being read now: notifications can have
+    /// their own choice, so a movie pauses for them but ducks for readings.
+    private var effectiveMediaPolicy: MediaPolicy {
+        guard readingNotification else { return settings.mediaPolicy }
+        switch settings.notificationMediaPolicy {
+        case .same: return settings.mediaPolicy
+        case .duck: return .duck
+        case .pause: return .pauseAndResume
+        }
+    }
+
     func restore(_ s: Snapshot) {
+        readingNotification = false
         technical = s.technical
         guard start(s.chunks, at: s.index, quiet: true, onFinish: nil) else { return }
         // Back to the page: the word highlight picks up where it left off.
@@ -203,7 +220,7 @@ final class Reader: ObservableObject {
             return false
         }
 
-        if settings.mediaPolicy == .pauseAndResume, !testMuted, !media.hasPaused { media.pauseOthers() }
+        if effectiveMediaPolicy == .pauseAndResume, !testMuted, !media.hasPaused { media.pauseOthers() }
         do {
             try audio.prepare(device: device)
         } catch {
@@ -881,7 +898,7 @@ final class Reader: ObservableObject {
     /// the output was just reconfigured and speech should wait a moment.
     @discardableResult
     private func quietOthers() -> Bool {
-        guard settings.mediaPolicy == .duck, !testMuted else { return false }
+        guard effectiveMediaPolicy == .duck, !testMuted else { return false }
         guard ducker.isLingering || !MediaControl.playingApps().isEmpty else { return false }
         var fresh = false
         if !ducker.duck(to: settings.duckLevel, freshlyBuilt: &fresh), !media.hasPaused { media.pauseOthers() }

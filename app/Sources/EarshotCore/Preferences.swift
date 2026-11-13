@@ -131,6 +131,19 @@ public enum ReadScope: String, CaseIterable, Codable, Sendable {
     }
 }
 
+/// What happens to a playing video or music while a notification is read out.
+public enum NotificationMediaPolicy: String, CaseIterable, Codable, Sendable {
+    case same, duck, pause
+
+    public var title: String {
+        switch self {
+        case .same: "The same as for readings"
+        case .duck: "Turn it down, back up after"
+        case .pause: "Pause it, resume when done"
+        }
+    }
+}
+
 public enum MediaPolicy: String, CaseIterable, Codable, Sendable {
     case duck, pauseAndResume, keepPlaying
 

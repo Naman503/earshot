@@ -525,6 +525,17 @@ private struct MediaTab: View {
                 Text("Earshot presses the system play/pause key, which YouTube in your browser, Spotify, Music and most players follow. It only resumes what it paused.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Section {
+                Picker("While a notification is read out", selection: $settings.notificationMediaPolicy) {
+                    ForEach(NotificationMediaPolicy.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.radioGroup)
+            } header: {
+                Text("Notifications")
+            } footer: {
+                Text("Notifications are short, so you may prefer a video to just dip in volume for them — or pause, so you don't miss a moment while listening.")
+                    .font(.caption)
+            }
             Section("Playing right now") {
                 if playing.isEmpty {
                     Text("Nothing").foregroundStyle(.secondary)
