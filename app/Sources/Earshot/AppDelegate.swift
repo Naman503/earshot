@@ -802,6 +802,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         w.orderOut(nil)
                     }
                 }
+            case "--demo-record":
+                // Records the README demo into <value>/demo.mov: a styled sample
+                // document in Earshot's own window, read muted with the live word
+                // highlight, the window region captured with ScreenCaptureKit.
+                // The audio is synthesized separately and muxed in afterwards.
+                waitForEngine { self.demoRecord(into: URL(fileURLWithPath: value, isDirectory: true)) }
             case "--marker-looks":
                 // Shows and photographs the marker in each style/colour (nothing saved).
                 let dir = URL(fileURLWithPath: value)
@@ -886,5 +892,124 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func waitForEngine(_ then: @escaping () -> Void, tries: Int = 40) {
         if kokoro.status == .ready || tries == 0 || kokoro.status == .notInstalled { then(); return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.waitForEngine(then, tries: tries - 1) }
+    }
+
+    // MARK: README demo recording (--demo-record)
+
+    static let demoBody = """
+    Earshot reads whatever is on your screen in a natural voice, straight into your headphones. \
+    Every word is highlighted as it is spoken, and the page scrolls by itself, like a teleprompter.
+    What you are hearing is Kokoro, a small neural voice running entirely on this Mac. \
+    It is reading at two point four times its natural pace, and it still sounds like this.
+    """
+
+    private func demoRecord(into dir: URL) {
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let title = "Earshot"
+        let body = Self.demoBody
+        // The sample document window.
+        let rect = NSRect(x: 320, y: 300, width: 840, height: 480)
+        let window = NSWindow(contentRect: rect, styleMask: [.titled], backing: .buffered, defer: false)
+        window.title = "Sample"
+        window.appearance = NSAppearance(named: .aqua)
+        window.backgroundColor = .white
+        let tv = NSTextView(frame: NSRect(origin: .zero, size: rect.size))
+        tv.isEditable = false
+        tv.backgroundColor = .white
+        tv.textContainerInset = NSSize(width: 56, height: 44)
+        tv.autoresizingMask = [.width, .height]
+        let doc = NSMutableAttributedString()
+        let titleStyle = NSMutableParagraphStyle()
+        titleStyle.paragraphSpacing = 16
+        doc.append(NSAttributedString(string: title + "\n", attributes: [
+            .font: NSFont.systemFont(ofSize: 30, weight: .bold), .foregroundColor: NSColor.black, .paragraphStyle: titleStyle]))
+        let bodyStyle = NSMutableParagraphStyle()
+        bodyStyle.lineSpacing = 7
+        bodyStyle.paragraphSpacing = 14
+        doc.append(NSAttributedString(string: body, attributes: [
+            .font: NSFont.systemFont(ofSize: 18), .foregroundColor: NSColor(white: 0.12, alpha: 1), .paragraphStyle: bodyStyle]))
+        tv.textStorage?.setAttributedString(doc)
+        window.contentView = tv
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+        let full = tv.string
+        let bodyStart = (full as NSString).range(of: body).location
+
+        Task { @MainActor in
+            // Record just this window's screen region.
+            guard let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true),
+                  let display = content.displays.first else { Log.write("demo: no display"); return }
+            let f = window.frame
+            let config = SCStreamConfiguration()
+            config.sourceRect = CGRect(x: f.minX, y: CGFloat(display.height) - f.maxY, width: f.width, height: f.height)
+            config.width = Int(f.width) * 2
+            config.height = Int(f.height) * 2
+            config.minimumFrameInterval = CMTime(value: 1, timescale: 30)
+            config.showsCursor = false
+            let stream = SCStream(filter: SCContentFilter(display: display, excludingWindows: []), configuration: config, delegate: nil)
+            let recConfig = SCRecordingOutputConfiguration()
+            let movie = dir.appendingPathComponent("demo.mov")
+            try? FileManager.default.removeItem(at: movie)
+            recConfig.outputURL = movie
+            recConfig.videoCodecType = .h264
+            let rec = SCRecordingOutput(configuration: recConfig, delegate: self.demoDelegate)
+            do {
+                try stream.addRecordingOutput(rec)
+                try await stream.startCapture()
+            } catch {
+                Log.write("demo: capture failed to start: \(error)")
+                return
+            }
+            self.demoStream = stream
+
+            // Find our own text view and read the body, muted, with the highlight.
+            try? await Task.sleep(for: .seconds(1.2))
+            let root = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
+            func findTextArea(_ e: AXUIElement) -> AXUIElement? {
+                var r: CFTypeRef?
+                AXUIElementCopyAttributeValue(e, kAXRoleAttribute as CFString, &r)
+                if (r as? String) == "AXTextArea" { return e }
+                var k: CFTypeRef?
+                AXUIElementCopyAttributeValue(e, kAXChildrenAttribute as CFString, &k)
+                for c in k as? [AXUIElement] ?? [] { if let found = findTextArea(c) { return found } }
+                return nil
+            }
+            guard let el = findTextArea(root) else { Log.write("demo: no text view"); return }
+            let loc = self.grabber.textViewLocator(el, text: full, start: bodyStart)
+            self.reader.testMuted = true
+            Log.write(String(format: "demo: read called at %.3f", Date().timeIntervalSince1970))
+            self.reader.read(body, source: "demo", quiet: true, locator: loc, onFinish: {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(1.5))
+                    try? await self.demoStream?.stopCapture()
+                    self.demoStream = nil
+                    self.reader.testMuted = false
+                    Log.write("demo: saved \(movie.path)")
+                }
+            }, onInterrupt: nil)
+        }
+    }
+}
+
+private var demoStreamKey: UInt8 = 0
+
+extension AppDelegate {
+    fileprivate var demoStream: SCStream? {
+        get { objc_getAssociatedObject(self, &demoStreamKey) as? SCStream }
+        set { objc_setAssociatedObject(self, &demoStreamKey, newValue, .OBJC_ASSOCIATION_RETAIN) }
+    }
+    fileprivate var demoDelegate: DemoRecordingDelegate { DemoRecordingDelegate.shared }
+}
+
+/// Logs when ScreenCaptureKit actually starts writing frames, so the demo's
+/// audio can be placed at the right moment when muxing.
+final class DemoRecordingDelegate: NSObject, SCRecordingOutputDelegate {
+    static let shared = DemoRecordingDelegate()
+    func recordingOutputDidStartRecording(_ recordingOutput: SCRecordingOutput) {
+        Log.write(String(format: "demo: recording started at %.3f", Date().timeIntervalSince1970))
+    }
+    func recordingOutput(_ recordingOutput: SCRecordingOutput, didFailWithError error: any Error) {
+        Log.write("demo: recording failed: \(error)")
     }
 }

@@ -551,6 +551,9 @@ final class HUD {
     /// Only over the app being read: not on top of whatever you switched to.
     private var sourceInFront: Bool {
         guard let pid = lastLocator?.pid, pid > 0 else { return true }
+        // Earshot's own windows (tests, the README demo) are right there on screen
+        // even when another app is active: never hide their highlight.
+        if pid == ProcessInfo.processInfo.processIdentifier { return true }
         return NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
     }
 

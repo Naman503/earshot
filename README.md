@@ -25,7 +25,18 @@ A macOS menu bar app that reads anything on screen aloud in a natural local voic
 
 ## 📑 Contents
 
-[Why](#-why) · [Highlights](#-highlights) · [Setup](#-setup) · [Permissions](#-permissions) · [Default controls](#-default-controls) · [Features in detail](#-features-in-detail) · [How it works](#-how-it-works) · [Privacy](#-privacy) · [Troubleshooting](#-troubleshooting) · [License](#-license)
+[See and hear it](#-see-and-hear-it) · [Why](#-why) · [Highlights](#-highlights) · [Setup](#-setup) · [Permissions](#-permissions) · [Default controls](#-default-controls) · [Features in detail](#-features-in-detail) · [How it works](#-how-it-works) · [Privacy](#-privacy) · [Troubleshooting](#-troubleshooting) · [License](#-license)
+
+## 🎬 See and hear it
+
+<div align="center">
+<img src="docs/media/demo.gif" width="720" alt="Earshot reading a document: each word is highlighted as it is spoken, moving through the text">
+</div>
+
+The real thing, recorded from the app — the highlight you see is following the voice at **2.4× speed**:
+
+- **[▶ Watch the demo with sound](docs/media/demo.mp4)** — the same clip with the voice you'd hear (Kokoro `af_heart`, 2.4×, time-stretched with WSOLA).
+- **[🔊 Hear the voice at its natural pace](docs/media/voice-sample.mp4)** — what the voice sounds like before any speed-up.
 
 ## 💡 Why
 
