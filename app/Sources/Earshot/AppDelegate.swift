@@ -182,7 +182,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let t = Timer(timeInterval: 2, repeats: true) { _ in
             let now = Date()
             let lag = now.timeIntervalSince(last) - 2
-            if lag > 0.3 { Log.write("stall: the app was busy for \(Int(lag * 1000)) ms") }
+            // Over 30 s is the Mac having slept, not the app being busy.
+            if lag > 0.3, lag < 30 { Log.write("stall: the app was busy for \(Int(lag * 1000)) ms") }
             last = now
         }
         t.tolerance = 0.1

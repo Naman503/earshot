@@ -665,6 +665,13 @@ final class Reader: ObservableObject {
     private func synthesize(_ i: Int) {
         let id = readID
         let text = chunks[i]
+        // Nothing speakable (a form blank, a row of dashes): skip it outright
+        // instead of asking the engine and waiting on an empty answer.
+        guard text.contains(where: { $0.isLetter || $0.isNumber }) else {
+            failed.insert(i)
+            scheduleReady()
+            return
+        }
         // Technical chunks are generated faster still; the player rate stays the
         // same, so `bakedFor` records the normal speed they stand in for.
         let fast = i < technical.count && technical[i] && chunks.count == technical.count
@@ -733,8 +740,10 @@ final class Reader: ObservableObject {
         let token = playToken
         var next = (scheduled.last ?? index - 1) + 1
         while next < chunks.count, next < index + lookahead {
-            if failed.contains(next), scheduled.isEmpty, next == index {
-                index += 1  // skip a chunk that could not be synthesized
+            if failed.contains(next) {
+                // Skip a chunk that can't be voiced, wherever it is in the
+                // queue, so one dead sentence never leaves a gap in the sound.
+                if scheduled.isEmpty, next == index { index += 1 }
                 next += 1
                 continue
             }
