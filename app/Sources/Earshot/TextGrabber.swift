@@ -144,7 +144,15 @@ final class TextGrabber {
 
         if let web = role(el) == "AXWebArea" ? el : ancestor(of: el, role: "AXWebArea"),
            let g = webGrab(unit, web: web, el: el, at: point) {
-            return g
+            // A page can answer with text from somewhere else entirely (LinkedIn
+            // gave a nav badge for a tap on a job description). A sentence or
+            // paragraph must be under the pointer; otherwise keep looking.
+            if [.sentence, .paragraph].contains(unit), let f = g.frame,
+               !f.insetBy(dx: -80, dy: -80).contains(point) {
+                Log.write("grab: web text was at \(f), not under the pointer \(point) — using the element instead")
+            } else {
+                return g
+            }
         }
         // Outside web pages, "visible" is exactly what OCR sees.
         if unit == .visible { return nil }
@@ -156,6 +164,9 @@ final class TextGrabber {
         // Still a loose fragment of a Chromium page: reading the screen gets the
         // whole paragraph; this element alone would be a word or two.
         if chromium, role(el) == "AXStaticText", unit != .window {
+            // A long static text is the paragraph itself (LinkedIn job pages):
+            // read it directly. Only a genuine word-or-two fragment goes to OCR.
+            if ownText(el).count >= 60, let g = elementGrab(unit, el: el) { return g }
             Log.write("grab: page text still not connected — reading the screen instead")
             return nil
         }
