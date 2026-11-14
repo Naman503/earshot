@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  app:
+    name: Build & test the app
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (release)
+        run: swift build -c release
+        working-directory: app
+      - name: Tests
+        run: swift test
+        working-directory: app
+
+  engine:
+    name: Check the engine
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - name: Lock file is in sync
+        run: uv lock --check
+        working-directory: engine
+      - name: Python compiles
+        run: python3 -m py_compile server.py
+        working-directory: engine

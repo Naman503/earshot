@@ -1,0 +1,30 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2B2D55"/>
+      <stop offset="1" stop-color="#14152E"/>
+    </linearGradient>
+    <linearGradient id="wave" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#8E90FF"/>
+      <stop offset="1" stop-color="#5EEAD4"/>
+    </linearGradient>
+  </defs>
+
+  <!-- macOS-style rounded square -->
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="url(#bg)"/>
+
+  <!-- lines of text being read -->
+  <g fill="#FFFFFF">
+    <rect x="96" y="150" width="150" height="26" rx="13" opacity="0.92"/>
+    <rect x="96" y="214" width="118" height="26" rx="13" opacity="0.55"/>
+    <rect x="96" y="278" width="134" height="26" rx="13" opacity="0.32"/>
+    <rect x="96" y="342" width="96"  height="26" rx="13" opacity="0.18"/>
+  </g>
+
+  <!-- the spoken word: a dot with sound arcs -->
+  <circle cx="306" cy="246" r="26" fill="url(#wave)"/>
+  <g fill="none" stroke="url(#wave)" stroke-width="22" stroke-linecap="round">
+    <path d="M 352 196 A 70 70 0 0 1 352 296"/>
+    <path d="M 390 158 A 124 124 0 0 1 390 334"/>
+  </g>
+</svg>
