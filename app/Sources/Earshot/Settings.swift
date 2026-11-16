@@ -273,6 +273,9 @@ enum Log {
                 h.write(line.data(using: .utf8)!)
                 try? h.close()
             } else {
+                // The folder can be cleaned away while Earshot runs: recreate it,
+                // or every later line is silently lost.
+                try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try? line.data(using: .utf8)!.write(to: url)
             }
         }
