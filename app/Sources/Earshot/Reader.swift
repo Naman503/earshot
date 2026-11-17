@@ -297,7 +297,8 @@ final class Reader: ObservableObject {
                 flash("Connect headphones to keep listening")
                 return
             }
-            if device.id != deviceID { restartAt(index, on: device) } else { audio.player.play() }
+            if device.id != deviceID || !audio.engine.isRunning { restartAt(index, on: device) }
+            audio.player.play()
             quietOthers()
             pausedByRoute = false
             setState(scheduled.isEmpty ? .preparing : .speaking)
@@ -932,6 +933,25 @@ final class Reader: ObservableObject {
         if s == .idle || state == .idle { watchForCalls(s != .idle) }
         state = s
         onStateChange?(s)
+        releaseWork?.cancel()
+        releaseWork = nil
+        if s == .idle { scheduleAudioRelease(after: 8) }
+        if s == .paused { scheduleAudioRelease(after: 60) }
+    }
+
+    /// Lets go of the output device once nothing is playing. A running audio
+    /// engine keeps a (silent) stream open to the earbuds, and multipoint earbuds
+    /// treat that as "the Mac is playing": they keep switching back to the Mac
+    /// and the phone loses its audio for seconds at a time.
+    private var releaseWork: DispatchWorkItem?
+    private func scheduleAudioRelease(after seconds: Double) {
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.state == .idle || self.state == .paused, self.audio.engine.isRunning else { return }
+            self.audio.shutdown()
+            Log.write("audio: released the output device (nothing playing)")
+        }
+        releaseWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
     }
 
     /// A notice that stays until `clearNotice` (e.g. "Read it? Say yes or no").

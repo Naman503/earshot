@@ -23,16 +23,20 @@ final class VoiceReply {
         return speech && mic
     }
 
-    /// The mic engine of one listen, handed between the setup queue and the main actor.
-    private final class Mic: @unchecked Sendable {
-        let engine = AVAudioEngine()
+    /// One listen's microphone: a capture session on the Mac's BUILT-IN mic only.
+    /// Never AVAudioEngine's input node — that opens the system default input
+    /// first, which is usually the earbuds: their mic switches them to phone-call
+    /// mode (muffled 16 kHz voice), Core Audio then loops on the format change,
+    /// and the earbuds stay claimed by the Mac (the phone can't take them over).
+    private final class Mic: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate, @unchecked Sendable {
+        let session = AVCaptureSession()
         let request = SFSpeechAudioBufferRecognitionRequest()
+        func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+            request.appendAudioSampleBuffer(sampleBuffer)
+        }
     }
-    /// Core Audio setup runs here, never on the main thread: when an audio device
-    /// changes mid-setup (the ducking device going away as a notification is
-    /// withdrawn), AVAudioEngine can block forever inside the input node — and
-    /// on the main thread that froze all of Earshot.
     private static let setupQueue = DispatchQueue(label: "earshot.voice-reply")
+    private static let bufferQueue = DispatchQueue(label: "earshot.voice-reply.buffers")
     /// A setup that never came back still holds `setupQueue`; don't queue more behind it.
     nonisolated(unsafe) private static var setupStuck = false
 
@@ -49,11 +53,10 @@ final class VoiceReply {
         mic.request.contextualStrings = Array(Self.yes.union(Self.no))
         let started = await Self.startMic(mic, within: 2)
         guard started else { return nil }
-        let engine = mic.engine, request = mic.request
+        let request = mic.request
         defer {
             Self.setupQueue.async {
-                engine.stop()
-                engine.inputNode.removeTap(onBus: 0)
+                mic.session.stopRunning()
                 request.endAudio()
             }
         }
@@ -85,8 +88,8 @@ final class VoiceReply {
         }
     }
 
-    /// Opens the built-in mic on `setupQueue`; false if it failed or took longer
-    /// than `limit` seconds (then the stuck setup is left to finish on its own).
+    /// Opens the built-in mic on `setupQueue`; false if there is none, it failed,
+    /// or it took longer than `limit` seconds.
     private static func startMic(_ mic: Mic, within limit: TimeInterval) async -> Bool {
         await withCheckedContinuation { (c: CheckedContinuation<Bool, Never>) in
             let lock = NSLock()
@@ -98,32 +101,23 @@ final class VoiceReply {
                 c.resume(returning: ok)
             }
             setupQueue.async {
-                let engine = mic.engine
-                if let id = builtInMicrophone(), let unit = engine.inputNode.audioUnit {
-                    var dev = id
-                    AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
-                                         &dev, UInt32(MemoryLayout<AudioDeviceID>.size))
+                var ok = false
+                if let device = builtInCaptureDevice(), let input = try? AVCaptureDeviceInput(device: device),
+                   mic.session.canAddInput(input) {
+                    mic.session.addInput(input)
+                    let output = AVCaptureAudioDataOutput()
+                    output.setSampleBufferDelegate(mic, queue: bufferQueue)
+                    if mic.session.canAddOutput(output) {
+                        mic.session.addOutput(output)
+                        mic.session.startRunning()
+                        ok = mic.session.isRunning
+                    }
                 }
-                let input = engine.inputNode
-                let request = mic.request
-                input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { buffer, _ in
-                    request.append(buffer)
-                }
-                var ok = true
-                do {
-                    engine.prepare()
-                    try engine.start()
-                } catch {
-                    Log.write("voice: mic failed: \(error.localizedDescription)")
-                    input.removeTap(onBus: 0)
-                    ok = false
-                }
+                if !ok { Log.write("voice: built-in microphone unavailable — answer with a tap or the shortcut") }
                 if setupStuck {
-                    // Came back after all: free the queue for the next question.
                     setupStuck = false
                     Log.write("voice: microphone setup finished late — listening works again")
-                    engine.stop()
-                    input.removeTap(onBus: 0)
+                    mic.session.stopRunning()
                 }
                 answer(ok)
             }
@@ -133,10 +127,25 @@ final class VoiceReply {
                 lock.unlock()
                 guard late else { return }
                 setupStuck = true
-                Log.write("voice: microphone setup took over \(Int(limit)) s (audio devices changing?) — skipping voice reply")
+                Log.write("voice: microphone setup took over \(Int(limit)) s — skipping voice reply")
                 answer(false)
             }
         }
+    }
+
+    /// The Mac's own microphone as a capture device (never Bluetooth or USB).
+    nonisolated private static func builtInCaptureDevice() -> AVCaptureDevice? {
+        let devices = AVCaptureDevice.DiscoverySession(deviceTypes: [.microphone], mediaType: .audio, position: .unspecified).devices
+        if let uid = builtInMicrophone().flatMap(deviceUID) { return devices.first { $0.uniqueID == uid } }
+        return devices.first { $0.transportType == Int32(bitPattern: kAudioDeviceTransportTypeBuiltIn) }
+    }
+
+    nonisolated private static func deviceUID(_ id: AudioDeviceID) -> String? {
+        var addr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceUID, mScope: kAudioObjectPropertyScopeGlobal, mElement: 0)
+        var uid: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &uid) == noErr, let uid else { return nil }
+        return uid.takeRetainedValue() as String
     }
 
     nonisolated private static func builtInMicrophone() -> AudioDeviceID? {
