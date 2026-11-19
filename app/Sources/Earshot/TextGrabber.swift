@@ -226,7 +226,9 @@ final class TextGrabber {
             for make in candidates {
                 guard let r = make() else { continue }
                 let t = paramString(web, "AXStringForTextMarkerRange", r) ?? paramString(el, "AXStringForTextMarkerRange", r)
-                if let t, !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { range = r; break }
+                // Real words only: a tap beside a list item can come back as just
+                // its bullet ("•"), which was then read instead of the paragraph.
+                if let t, t.contains(where: { $0.isLetter || $0.isNumber }) { range = r; break }
             }
         case .fromHere:
             let sentence = paramValue(web, "AXSentenceTextMarkerRangeForTextMarker", marker)
