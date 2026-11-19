@@ -1289,6 +1289,19 @@ final class TextRunLocator: WordLocator, @unchecked Sendable {
             guard let l = load() else { return nil }
             loaded = true
             (runs, text, cursor) = (l.runs, l.text as NSString, l.cursor)
+            // A reload mid-reading (the page rebuilt its text): carry on from the
+            // exact text we were just at. Starting again from where the reading
+            // began let a repeated phrase far down the page win, and the
+            // highlight jumped paragraphs ahead.
+            if let anchor = resumeAnchor {
+                resumeAnchor = nil
+                let r = text.range(of: anchor)
+                if r.location != NSNotFound {
+                    cursor = NSMaxRange(r)
+                    found = true
+                    misses = 0
+                }
+            }
         }
         let words = phrase.split(whereSeparator: \.isWhitespace).map(String.init)
         let following = next.split(whereSeparator: \.isWhitespace).map(String.init).prefix(3)
@@ -1310,11 +1323,20 @@ final class TextRunLocator: WordLocator, @unchecked Sendable {
         guard !reloading else { return nil }
         reloading = true
         defer { reloading = false }
+        // The text just before this word, to find our place again after the reload.
+        let lo = max(0, range.location - 80)
+        let before = text.substring(with: NSRange(location: lo, length: range.location - lo))
+        // Within one text run when that's long enough: a rebuilt page may split
+        // its runs differently, which changes the line breaks between them.
+        let sameRun = before.components(separatedBy: "\n").last ?? before
+        resumeAnchor = sameRun.count >= 20 ? sameRun : before.count >= 20 ? before : nil
         loaded = false
         found = false
         return locate(phrase, next: next)
     }
     private var reloading = false
+    /// Page text just before the current word, carried across a reload.
+    private var resumeAnchor: String?
     /// Words in a row that couldn't be placed.
     private var misses = 0
 

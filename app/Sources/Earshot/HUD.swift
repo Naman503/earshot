@@ -140,7 +140,11 @@ final class HUD {
         }
         // The page didn't move last time (its end): only try again once the
         // word is out of sight.
-        if pageStuck, !outOfSight { return }
+        if pageStuck, !outOfSight {
+            // Stuck only means "at the page's end": with page text still below
+            // the window (new text arrived, or a stop was misjudged), glide again.
+            guard case .some(.some(let bottom)) = pageEnd, bottom > view.maxY + gap * 2 else { return }
+        }
         pageStuck = false
 
         let dy: CGFloat
@@ -326,7 +330,7 @@ final class HUD {
         var frozen: Bool
         var last = Date()
         /// (moved so far as measured, sent so far when measured), newest last.
-        var probes: [(moved: CGFloat, sent: CGFloat)] = []
+        var probes: [(moved: CGFloat, sent: CGFloat, at: Date)] = []
     }
     private var tracking: Tracking?
     private var trackTimer: Timer?
@@ -380,8 +384,8 @@ final class HUD {
                     self.probing = false
                     guard let now, var t = self.tracking, t.locator === locator else { return }
                     let moved = t.startY - now.midY
-                    t.probes.append((moved, sentNow))
-                    if t.probes.count > 4 { t.probes.removeFirst() }
+                    t.probes.append((moved, sentNow, Date()))
+                    if t.probes.count > 16 { t.probes.removeFirst() }
                     let p = t.probes
                     // How much the page followed the last stretch of scrolling.
                     if p.count >= 2 {
@@ -415,10 +419,13 @@ final class HUD {
                             self.marker.show(now)
                         }
                     }
-                    if !t.frozen, p.count >= 3 {
-                        // Three checks in a row where the text didn't budge while
-                        // steps kept coming: the page has stopped.
-                        let a = p[p.count - 3], b = p[p.count - 1]
+                    // The oldest check from 0.35–0.5 s ago: apps like Claude report
+                    // text positions up to 0.2 s late, so a shorter window saw a
+                    // page that was moving fine as "stopped" and cut glides short.
+                    let ago = p.first { let age = Date().timeIntervalSince($0.at); return age >= 0.35 && age <= 0.5 }
+                    if !t.frozen, let a = ago, let b = p.last {
+                        // The text didn't budge for that long while steps kept
+                        // coming: the page has stopped.
                         let stalled = abs(b.moved - a.moved) < 2 && abs(b.sent - a.sent) > 8
                         let behind = abs(sentNow) - abs(moved) > 12
                         if stalled, behind {
