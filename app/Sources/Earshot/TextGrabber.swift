@@ -1126,6 +1126,53 @@ extension TextGrabber {
         return lowest
     }
 
+    /// The lowest point of `view` where the page itself shows. Apps like
+    /// Claude float the message box (and bars above it) over the bottom of
+    /// the conversation, so the window's bottom isn't where reading can be
+    /// seen. Finds the scrolling box holding `content` (its frame is clipped
+    /// while the text inside it isn't), then hit-tests up from the bottom
+    /// along the text's left side until a point lands inside that box again.
+    func uncoveredBottom(of view: CGRect, pid: pid_t, content: AXUIElement) -> CGFloat? {
+        var chain: [AXUIElement] = []
+        var cur: AXUIElement? = content
+        while let c = cur, chain.count < 40 {
+            chain.append(c)
+            if role(c) == "AXWebArea" { break }
+            cur = attrElement(c, kAXParentAttribute)
+        }
+        // The innermost ancestor shorter than its own child: the scroller.
+        var scroller: AXUIElement?
+        var childHeight = chain.first.flatMap { frame($0) }?.height ?? 0
+        for c in chain.dropFirst() {
+            guard let f = frame(c) else { continue }
+            if f.height < childHeight - 40 { scroller = c; break }
+            childHeight = max(childHeight, f.height)
+        }
+        guard let box = scroller, let sf = frame(box) else { return nil }
+        let app = AXUIElementCreateApplication(pid)
+        let column = frame(content) ?? sf
+        let x = max(sf.minX + 8, min(sf.maxX - 8, column.minX + 30))
+        func inside(_ y: CGFloat) -> Bool {
+            var el: AXUIElement?
+            guard AXUIElementCopyElementAtPosition(app, Float(x), Float(y), &el) == .success, var e = el else { return true }
+            for _ in 0..<40 {
+                if CFEqual(e, box) { return true }
+                if role(e) == "AXWebArea" || role(e) == "AXWindow" { return false }
+                guard let p = attrElement(e, kAXParentAttribute) else { return false }
+                e = p
+            }
+            return false
+        }
+        let bottom = min(view.maxY, sf.maxY)
+        var y = bottom - 4
+        let limit = bottom - view.height * 0.5
+        while y > limit {
+            if inside(y) { return y == bottom - 4 ? bottom : y + 4 }
+            y -= 12
+        }
+        return bottom  // nothing found: don't guess
+    }
+
     func webAreaFrame(of el: AXUIElement) -> CGRect? {
         var web: AXUIElement? = el
         while let w = web, role(w) != "AXWebArea" { web = attr(w, kAXParentAttribute).map { $0 as! AXUIElement } }
@@ -1224,7 +1271,31 @@ final class TextRunLocator: WordLocator, @unchecked Sendable {
     /// bring a line further on into view (it scrolls just enough to show it), so
     /// the spoken word lands about a third of the way down. Uses the app's own
     /// "scroll into view", which handles nested scroll areas like Claude's docs.
-    func visibleArea() -> CGRect? { viewport() }
+    func visibleArea() -> CGRect? {
+        guard let v = viewport() else { return nil }
+        coverLock.lock()
+        let cached = cover
+        coverLock.unlock()
+        let bottom: CGFloat
+        if let c = cached, c.view == v, Date().timeIntervalSince(c.at) < 3 {
+            bottom = c.bottom
+        } else {
+            let current = lastRange.flatMap { r in runs.first { NSMaxRange(r) > $0.start && r.location < $0.start + $0.length } }
+            let el = loaded ? (current ?? runs.first)?.element : nil
+            bottom = el.flatMap { grabber.uncoveredBottom(of: v, pid: pid, content: $0) } ?? v.maxY
+            if cached.map({ abs($0.bottom - bottom) > 8 || $0.view != v }) ?? true, bottom < v.maxY - 8 {
+                Log.write("highlight: page shows down to y \(Int(bottom)); the bottom \(Int(v.maxY - bottom)) px are covered (message box or bars)")
+            }
+            coverLock.lock()
+            cover = (v, bottom, Date())
+            coverLock.unlock()
+        }
+        guard bottom < v.maxY, bottom > v.minY + 80 else { return v }
+        return CGRect(x: v.minX, y: v.minY, width: v.width, height: bottom - v.minY)
+    }
+    /// Where the page stops showing above floating boxes, measured now and then.
+    private var cover: (view: CGRect, bottom: CGFloat, at: Date)?
+    private let coverLock = NSLock()
 
     var tracksScrolling: Bool { true }
 
@@ -1261,11 +1332,11 @@ final class TextRunLocator: WordLocator, @unchecked Sendable {
     }
 
     var debugView: String {
-        "visible area \(viewport().map { "\($0)" } ?? "unknown"), last word \(lastRange.flatMap { box(for: $0) }.map { "\($0)" } ?? "none")"
+        "visible area \(viewport().map { "\($0)" } ?? "unknown")\(cover.map { ", shown down to y \(Int($0.bottom))" } ?? ""), last word \(lastRange.flatMap { box(for: $0) }.map { "\($0)" } ?? "none")"
     }
 
     func scrollToKeepVisible() -> Bool {
-        guard loaded, let range = lastRange, let box = box(for: range), let view = viewport(), view.height > 80,
+        guard loaded, let range = lastRange, let box = box(for: range), let view = visibleArea(), view.height > 80,
               let i = runs.firstIndex(where: { NSMaxRange(range) > $0.start && range.location < $0.start + $0.length }) else { return false }
         let h = view.height
         if box.maxY > view.minY + h * 0.8 || box.minY > view.maxY {
