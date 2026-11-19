@@ -1099,10 +1099,12 @@ extension TextGrabber {
     /// boxes unclipped, so text scrolled out of sight still has its true
     /// place). Walks the page from its end backwards and stops once it's back
     /// in the upper half of the view, so it only looks at the last stretch.
-    func pageBottom(from el: AXUIElement, below view: CGRect, column: ClosedRange<CGFloat>? = nil) -> CGFloat? {
+    func pageBottom(from el: AXUIElement, below view: CGRect, column: ClosedRange<CGFloat>? = nil, within scroller: AXUIElement? = nil) -> CGFloat? {
         var web: AXUIElement? = el
         while let w = web, role(w) != "AXWebArea" { web = attr(w, kAXParentAttribute).map { $0 as! AXUIElement } }
-        guard let root = web else { return nil }
+        // Only the scrolling box's own text: a message box or status bar
+        // floating over the page's bottom isn't page left to scroll to.
+        guard let root = scroller ?? web else { return nil }
         var lowest: CGFloat?
         var done = false
         var seen = 0
@@ -1133,6 +1135,13 @@ extension TextGrabber {
     /// while the text inside it isn't), then hit-tests up from the bottom
     /// along the text's left side until a point lands inside that box again.
     func uncoveredBottom(of view: CGRect, pid: pid_t, content: AXUIElement) -> CGFloat? {
+        guard let box = scroller(of: content), let sf = frame(box) else { return nil }
+        return uncoveredBottom(of: view, pid: pid, content: content, scroller: box, frame: sf)
+    }
+
+    /// The scrolling box holding `content`: the innermost ancestor shorter
+    /// than its own child (its frame is clipped, the text inside isn't).
+    func scroller(of content: AXUIElement) -> AXUIElement? {
         var chain: [AXUIElement] = []
         var cur: AXUIElement? = content
         while let c = cur, chain.count < 40 {
@@ -1148,7 +1157,10 @@ extension TextGrabber {
             if f.height < childHeight - 40 { scroller = c; break }
             childHeight = max(childHeight, f.height)
         }
-        guard let box = scroller, let sf = frame(box) else { return nil }
+        return scroller
+    }
+
+    private func uncoveredBottom(of view: CGRect, pid: pid_t, content: AXUIElement, scroller box: AXUIElement, frame sf: CGRect) -> CGFloat? {
         let app = AXUIElementCreateApplication(pid)
         let column = frame(content) ?? sf
         let x = max(sf.minX + 8, min(sf.maxX - 8, column.minX + 30))
@@ -1328,7 +1340,9 @@ final class TextRunLocator: WordLocator, @unchecked Sendable {
         // The reading's own column, so side panels and pop-ups don't count.
         let current = lastRange.flatMap { r in runs.first { NSMaxRange(r) > $0.start && r.location < $0.start + $0.length } }
         let column = (current?.element).flatMap { grabber.elementFrame($0) } ?? grabber.elementFrame(el)
-        return grabber.pageBottom(from: el, below: view, column: column.map { $0.minX...$0.maxX })
+        let content = (current ?? runs.last)?.element
+        return grabber.pageBottom(from: el, below: view, column: column.map { $0.minX...$0.maxX },
+                                  within: content.flatMap { grabber.scroller(of: $0) })
     }
 
     var debugView: String {

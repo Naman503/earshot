@@ -143,9 +143,13 @@ final class HUD {
         if pageStuck, !outOfSight {
             // Stuck only means "at the page's end": with page text still below
             // the window (new text arrived, or a stop was misjudged), glide again.
-            guard case .some(.some(let bottom)) = pageEnd, bottom > view.maxY + gap * 2 else { return }
+            // Only text that wasn't there when it stopped counts (new text
+            // arrived): the same "text below" that didn't move is out of reach.
+            guard case .some(.some(let bottom)) = pageEnd, bottom > view.maxY + gap * 2,
+                  bottom > (stuckEnd ?? -.greatestFiniteMagnitude) + gap else { return }
         }
         pageStuck = false
+        stuckEnd = nil
 
         let dy: CGFloat
         if outOfSight {
@@ -167,6 +171,7 @@ final class HUD {
         lastAutoScroll = Date()
         stats.scrolled += 1
         let startY = box.midY
+        glideEnd = pageEnd.flatMap { $0 } ?? view.maxY
         gliding = true
         beginTracking(locator, glide: true, dir: dy > 0 ? 1 : -1)
         scroller.scroll(by: dy, pid: locator.pid, view: view, duration: duration, easing: settings.autoScrollEasing, step: { [weak self] delta, _ in
@@ -189,7 +194,7 @@ final class HUD {
                         let moved = startY - now.midY
                         Log.write("highlight: glide \(Int(dy)) px in \(String(format: "%.2f", duration)) s, text moved \(Int(moved)) px")
                         // Moved much less than asked: the page hit its end.
-                        if abs(moved) < abs(dy) * 0.6 { self.pageStuck = true }
+                        if abs(moved) < abs(dy) * 0.6 { self.pageStuck = true; self.stuckEnd = self.glideEnd }
                         // A big glide that did nothing: the page (or its measuring)
                         // is broken — stop auto-scrolls until you scroll yourself.
                         if abs(moved) < 10, abs(dy) > 150 {
@@ -222,6 +227,9 @@ final class HUD {
     /// Set when a glide didn't move the page; cleared by your own scrolling
     /// or a new reading.
     private var pageStuck = false
+    /// Where the page's text ended when it got stuck, and when the last glide began.
+    private var stuckEnd: CGFloat?
+    private var glideEnd: CGFloat?
     /// Set when a large glide provably moved nothing: no more auto-scrolls
     /// this reading until you scroll yourself.
     private var glidesGaveUp = false
@@ -264,6 +272,7 @@ final class HUD {
             return
         }
         pageStuck = false
+        stuckEnd = nil
         glidesGaveUp = false
         scrollEnd?.cancel()
         let end = DispatchWorkItem { [weak self] in
@@ -447,6 +456,7 @@ final class HUD {
         scroller.cancel()
         Log.write("highlight: page stopped after \(Int(moved)) px — glide ended there")
         pageStuck = true
+        stuckEnd = glideEnd
         gliding = false
         tracking = nil
         findNext()
@@ -544,6 +554,7 @@ final class HUD {
         pending = nil
         lastLocator = nil
         pageStuck = false
+        stuckEnd = nil
         glidesGaveUp = false
         ocrStale = false
         lastView = nil

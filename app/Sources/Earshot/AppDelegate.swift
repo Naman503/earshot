@@ -743,7 +743,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         }
                         Log.write("follow-test: \(line)")
                     }
-                    Log.write("follow-test: visible \(loc.visibleArea().map { "\($0)" } ?? "unknown"); \(loc.debugView)")
+                    Log.write("follow-test: visible \(loc.visibleArea().map { "\($0)" } ?? "unknown"), text below ends at \(loc.visibleArea().flatMap { loc.pageBottom(below: $0) }.map { "\(Int($0))" } ?? "none"); \(loc.debugView)")
                     Log.write("follow-test: \(found) found, \(missed) missed")
                 }
             case "--scroll-test":
