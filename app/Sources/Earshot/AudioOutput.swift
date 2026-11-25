@@ -232,7 +232,13 @@ final class AudioOutput: ObservableObject {
         let buffer: UInt32 = CoreAudioQuery.get(id, kAudioDevicePropertyBufferFrameSize, scope: out, 0) ?? 0
         let streams = CoreAudioQuery.array(id, kAudioDevicePropertyStreams, scope: out, of: AudioStreamID.self)
         let stream: UInt32 = streams.first.flatMap { CoreAudioQuery.get($0, kAudioStreamPropertyLatency, 0) } ?? 0
-        return Double(device + safety + buffer + stream) / rate
+        var total = Double(device + safety + buffer + stream) / rate
+        // Bluetooth earbuds play later than Core Audio reports (their own
+        // buffering isn't in these figures): without this the highlight ran a
+        // word or two ahead of the voice at fast speeds.
+        let transport: UInt32 = CoreAudioQuery.get(id, kAudioDevicePropertyTransportType, 0) ?? 0
+        if transport == kAudioDeviceTransportTypeBluetooth || transport == kAudioDeviceTransportTypeBluetoothLE { total += 0.1 }
+        return total
     }
 
     func shutdown() {

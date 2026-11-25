@@ -204,6 +204,9 @@ final class TextGrabber {
         return chromium
     }
     private var chromiumPIDs: [pid_t: Bool] = [:]
+    /// Per app, for `estimatedBounds`: font size per line height, and line height.
+    private var fitRatio: [pid_t: CGFloat] = [:]
+    private var lineGlyph: [pid_t: CGFloat] = [:]
 
     func webGrab(_ unit: GrabUnit, web: AXUIElement, el: AXUIElement, at point: CGPoint) -> Grab? {
         // WebKit answers AXTextMarkerForPosition; Chromium doesn't, so walk the
@@ -909,16 +912,22 @@ final class TextGrabber {
     private func ocrGrab(_ unit: GrabUnit, at point: CGPoint) async -> Grab? {
         guard let (image, windowFrame, pid) = await captureWindow(at: point) else { return nil }
         let lines = await recognize(image, in: windowFrame)
-        let blocks = OCRLayout.blocks(lines)
-        guard !blocks.isEmpty else { return nil }
+        let all = OCRLayout.blocks(lines)
+        guard !all.isEmpty else { return nil }
         func locator(_ chosen: ArraySlice<OCRLayout.Block>) -> OCRLocator {
             OCRLocator(lines: chosen.flatMap(\.lines), pid: pid)
         }
         if unit == .window || unit == .visible {
+            let blocks = all
             return Grab(text: blocks.map(\.text).joined(separator: "\n"), frame: windowFrame, source: "OCR",
                         locator: locator(blocks[...]))
         }
-        guard let i = OCRLayout.blockIndex(at: point, in: blocks) else { return nil }
+        guard let tappedIndex = OCRLayout.blockIndex(at: point, in: all) else { return nil }
+        // Only the tapped text's column: a sidebar beside it was read in
+        // between its paragraphs.
+        let inColumn = OCRLayout.column(of: tappedIndex, in: all)
+        let blocks = inColumn.map { all[$0] }
+        guard let i = inColumn.firstIndex(of: tappedIndex) else { return nil }
         switch unit {
         case .fromHere:
             return Grab(text: blocks[i...].map(\.text).joined(separator: "\n"), frame: blocks[i].rect, source: "OCR",
@@ -991,9 +1000,13 @@ final class TextGrabber {
 
     // MARK: AX helpers
 
+    /// Tests only: hit-test this app's own windows (it may sit behind others).
+    nonisolated(unsafe) static var testHitPID: pid_t?
+
     private func element(at p: CGPoint) -> AXUIElement? {
         var el: AXUIElement?
-        guard AXUIElementCopyElementAtPosition(system, Float(p.x), Float(p.y), &el) == .success, let hit = el else { return nil }
+        let target = Self.testHitPID.map { AXUIElementCreateApplication($0) } ?? system
+        guard AXUIElementCopyElementAtPosition(target, Float(p.x), Float(p.y), &el) == .success, let hit = el else { return nil }
         return deepest(at: p, from: hit)
     }
 
@@ -1025,6 +1038,13 @@ final class TextGrabber {
             }
         }
         walk(hit)
+        // An empty layer over the whole page (ChatGPT lays one across its
+        // window) catches the hit but holds no text: search the page instead.
+        if best == nil, string(hit, kAXSubroleAttribute) == "AXEmptyGroup" || children(hit).isEmpty,
+           let web = r == "AXWebArea" ? hit : ancestor(of: hit, role: "AXWebArea") {
+            visited = 0
+            walk(web)
+        }
         return best?.0 ?? hit
     }
 
@@ -1245,7 +1265,81 @@ extension TextGrabber {
 
     func textBounds(_ el: AXUIElement, _ range: NSRange) -> CGRect? {
         var cf = CFRange(location: range.location, length: range.length)
-        return AXValueCreate(.cfRange, &cf).flatMap { paramRect(el, kAXBoundsForRangeParameterizedAttribute, $0) }
+        if let r = AXValueCreate(.cfRange, &cf).flatMap({ paramRect(el, kAXBoundsForRangeParameterizedAttribute, $0) }) { return r }
+        return estimatedBounds(el, range)
+    }
+
+    /// Pages that report no word boxes at all (ChatGPT's app) still give each
+    /// text's frame. Lay the text out in the system font, sized to fit that
+    /// frame, and read the word's spot from the layout: within a few pixels,
+    /// which is all a highlight needs.
+    private func estimatedBounds(_ el: AXUIElement, _ range: NSRange, depth: Int = 0) -> CGRect? {
+        guard role(el) == "AXStaticText", let f = frame(el), f.width > 2, f.height > 4 else { return nil }
+        let text = (string(el, kAXValueAttribute) ?? "") as NSString
+        guard text.length > 0, range.location >= 0, NSMaxRange(range) <= text.length else { return nil }
+        var pid: pid_t = 0
+        AXUIElementGetPid(el, &pid)
+        let (k, g0) = lock.withLock { (fitRatio[pid] ?? 0.82, lineGlyph[pid] ?? 14) }
+        let probe = NSFont.systemFont(ofSize: 14)
+        func width(_ t: String, _ font: NSFont) -> CGFloat { (t as NSString).size(withAttributes: [.font: font]).width }
+        if f.height < g0 * 1.6 {
+            // One line: the text spans the frame's width.
+            let full = width(text as String, probe)
+            guard full > 0 else { return nil }
+            if text.length >= 12 {
+                // Learn this page's font size against its line height.
+                let ratio = 14 * f.width / full / f.height
+                if ratio > 0.5, ratio < 1.2 {
+                    lock.withLock {
+                        fitRatio[pid] = (fitRatio[pid] ?? ratio) * 0.8 + ratio * 0.2
+                        lineGlyph[pid] = (lineGlyph[pid] ?? f.height) * 0.8 + f.height * 0.2
+                    }
+                }
+            }
+            let scale = f.width / full
+            let x = width(text.substring(to: range.location), probe) * scale
+            let w = width(text.substring(with: range), probe) * scale
+            return CGRect(x: f.minX + x, y: f.minY, width: max(w, 2), height: f.height)
+        }
+        // Several lines: line height and spacing from how tall the frame is.
+        let lines = max(2, Int(((f.height / g0) - 1) / 1.32 + 1.5))
+        let g = f.height / (1 + 1.32 * CGFloat(lines - 1))
+        let pitch = 1.32 * g
+        let font = NSFont.systemFont(ofSize: k * g)
+        // A text that continues a line (after a link or bold words) starts
+        // where the text before it ends.
+        var indent: CGFloat = 0
+        if depth < 2, let parent = attrElement(el, kAXParentAttribute) {
+            let kids = children(parent)
+            if let i = kids.firstIndex(where: { CFEqual($0, el) }), i > 0, let pf = frame(kids[i - 1]) {
+                let prev = kids[i - 1]
+                if pf.height < g * 1.6, abs(pf.minY - f.minY) < 4, pf.maxX > f.minX {
+                    indent = pf.maxX - f.minX
+                } else if pf.height >= g * 1.6, abs(pf.maxY - g - f.minY) < 5,
+                          let len = string(prev, kAXValueAttribute).map({ ($0 as NSString).length }), len > 0,
+                          let end = estimatedBounds(prev, NSRange(location: len - 1, length: 1), depth: depth + 1) {
+                    indent = max(0, end.maxX - f.minX)
+                }
+            }
+        }
+        let style = NSMutableParagraphStyle()
+        style.firstLineHeadIndent = min(indent, f.width - 10)
+        let storage = NSTextStorage(string: text as String, attributes: [.font: font, .paragraphStyle: style])
+        let layout = NSLayoutManager()
+        let container = NSTextContainer(size: CGSize(width: f.width + 1, height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        layout.addTextContainer(container)
+        storage.addLayoutManager(layout)
+        let glyphs = layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+        guard glyphs.length > 0 else { return nil }
+        let rect = layout.boundingRect(forGlyphRange: glyphs, in: container)
+        var line = 0
+        var found = false
+        layout.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: layout.numberOfGlyphs)) { _, _, _, r, stop in
+            if NSLocationInRange(glyphs.location, r) { found = true; stop.pointee = true } else { line += 1 }
+        }
+        guard found else { return nil }
+        return CGRect(x: f.minX + rect.minX, y: f.minY + CGFloat(min(line, lines - 1)) * pitch, width: max(rect.width, 2), height: g)
     }
 }
 
@@ -1345,6 +1439,14 @@ final class TextRunLocator: WordLocator, @unchecked Sendable {
                                   within: content.flatMap { grabber.scroller(of: $0) })
     }
 
+    var debugRuns: String {
+        let v = viewport() ?? .zero
+        let shown = runs.filter { r in grabber.elementFrame(r.element).map { v.intersects($0) && $0.minY > v.minY + 100 } ?? false }
+        return "\(runs.count) runs, cursor \(cursor), \(shown.count) on screen:\n" + shown.prefix(25).map { r in
+            "   \(grabber.elementFrame(r.element).map { "\($0)" } ?? "?") “\(text.substring(with: NSRange(location: r.start, length: r.length)).prefix(110))”"
+        }.joined(separator: "\n")
+    }
+
     var debugView: String {
         "visible area \(viewport().map { "\($0)" } ?? "unknown")\(cover.map { ", shown down to y \(Int($0.bottom))" } ?? ""), last word \(lastRange.flatMap { box(for: $0) }.map { "\($0)" } ?? "none")"
     }
@@ -1397,6 +1499,10 @@ final class TextRunLocator: WordLocator, @unchecked Sendable {
             return nil
         }
         misses = 0
+        // Evidence for "the highlight ran ahead": a jump well past the last word.
+        if found, r.location > cursor + 150 {
+            Log.write("highlight: jumped \(r.location - cursor) chars ahead to “\(text.substring(with: NSRange(location: r.location, length: min(50, text.length - r.location))))”")
+        }
         var range = r
         for w in words.dropFirst() {
             if let n = find(w, from: NSMaxRange(range), within: 24) { range = NSUnionRange(range, n) }
@@ -1590,6 +1696,47 @@ extension TextGrabber {
     }
 
     /// Debug: the paragraph grab a tap on `el` would make (as webGrab does).
+    /// Debug: the named app's front window and the chain of roles at a point in it.
+    func windowFrame(inApp name: String) -> (pid_t, CGRect)? {
+        guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.localizedName == name }) else { return nil }
+        enableWebAccessibility(pid: app.processIdentifier)
+        usleep(800_000)
+        let wins = (attr(AXUIElementCreateApplication(app.processIdentifier), kAXWindowsAttribute) as? [AXUIElement]) ?? []
+        guard let f = wins.compactMap({ frame($0) }).max(by: { $0.width * $0.height < $1.width * $1.height }) else { return nil }
+        return (app.processIdentifier, f)
+    }
+
+    /// Debug: the raw hit, its children, and every page text whose box holds the point.
+    func hitReport(at p: CGPoint) -> String {
+        var el: AXUIElement?
+        let target = Self.testHitPID.map { AXUIElementCreateApplication($0) } ?? system
+        guard AXUIElementCopyElementAtPosition(target, Float(p.x), Float(p.y), &el) == .success, let hit = el else { return "no hit" }
+        var out = "hit \(role(hit) ?? "?")/\(string(hit, kAXSubroleAttribute) ?? "") \(frame(hit).map { "\($0)" } ?? "?") kids:"
+        for c in children(hit).prefix(12) { out += "\n   \(role(c) ?? "?") \(frame(c).map { "\($0)" } ?? "?") “\((string(c, kAXValueAttribute) ?? "").prefix(30))”" }
+        guard let web = ancestor(of: hit, role: "AXWebArea") else { return out + "\n no web" }
+        var hits: [String] = []
+        var n = 0
+        func walk(_ e: AXUIElement, _ path: String) {
+            guard n < 20000 else { return }
+            n += 1
+            if role(e) == "AXStaticText" {
+                if let f = frame(e), f.insetBy(dx: 0, dy: -6).contains(p) {
+                    var names: CFArray?
+                    AXUIElementCopyParameterizedAttributeNames(e, &names)
+                    var cf = CFRange(location: 0, length: 4)
+                    var b: CFTypeRef?
+                    let err = AXUIElementCopyParameterizedAttributeValue(e, kAXBoundsForRangeParameterizedAttribute as CFString, AXValueCreate(.cfRange, &cf)!, &b)
+                    let dbg = " est=\(textBounds(e, NSRange(location: 0, length: min(4, (string(e, kAXValueAttribute) ?? "").utf16.count))).map { "\($0)" } ?? "nil")"
+                    hits.append(dbg + " \(path.suffix(40)) \(f) “\((string(e, kAXValueAttribute) ?? "").prefix(40))” bounds err \(err.rawValue) \(b.map { "\($0)" }?.suffix(60) ?? "") params \((names as? [String]) ?? [])")
+                }
+                return
+            }
+            for c in children(e) { walk(c, path + ">" + (role(c) ?? "?").replacingOccurrences(of: "AX", with: "")) }
+        }
+        walk(web, "")
+        return out + "\n texts at point (\(n) visited):\n   " + hits.suffix(6).joined(separator: "\n   ")
+    }
+
     func grabForTest(_ el: AXUIElement) -> Grab? {
         guard let web = ancestor(of: el, role: "AXWebArea"), let f = frame(el) else { return nil }
         return webGrab(.paragraph, web: web, el: el, at: CGPoint(x: f.minX + 5, y: f.minY + min(f.height / 2, 8)))

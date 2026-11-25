@@ -858,6 +858,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.renderSettings(to: value) }
             case "--say":
                 waitForEngine { self.reader.read(value, source: "--say") }
+            case "--probe-hit":
+                // "App|fx,fy": grabs a paragraph at that fraction of the app's window
+                // (hit-testing that app even when it's behind), then locates its words.
+                let bits = value.components(separatedBy: "|")
+                let fr = (bits.count > 1 ? bits[1] : "0.6,0.45").components(separatedBy: ",").compactMap { Double($0) }
+                let grabber = self.grabber
+                Task.detached {
+                    guard let (pid, w) = grabber.windowFrame(inApp: bits[0]) else { Log.write("probe-hit: no window"); return }
+                    TextGrabber.testHitPID = pid
+                    let p = CGPoint(x: w.minX + w.width * fr[0], y: w.minY + w.height * fr[1])
+                    Log.write("probe-hit: window \(w), point \(p)")
+                    Log.write("probe-hit diagnose: \(grabber.diagnose(at: p))")
+                    Log.write("probe-hit report: \(grabber.hitReport(at: p))")
+                    let g = await grabber.grab(.paragraph, at: p)
+                    Log.write("probe-hit: source=\(g?.source ?? "nil") frame=\(String(describing: g?.frame)) text=\(g?.text.prefix(300) ?? "")")
+                    if let loc = g?.locator, let text = g?.text {
+                        var ok = 0, miss = 0, firstBox: CGRect?
+                        var boxes: [String] = []
+                        for w in text.split(separator: " ").prefix(40) {
+                            if let b = loc.locate(String(w), next: "") {
+                                ok += 1; if firstBox == nil { firstBox = b }
+                                boxes.append("\(w)@\(Int(b.minX)),\(Int(b.minY)),\(Int(b.width))")
+                            } else { miss += 1 }
+                        }
+                        Log.write("probe-hit boxes: \(boxes.joined(separator: " "))")
+                        if let r = loc as? TextRunLocator { Log.write("probe-hit runs: \(r.debugRuns)") }
+                        Log.write("probe-hit: locate \(ok) found, \(miss) missed, first box \(String(describing: firstBox)); \(loc.debugView)")
+                    }
+                    TextGrabber.testHitPID = nil
+                }
             case "--probe", "--probe-app":
                 let unit: GrabUnit = parts[0] == "--probe" ? GrabUnit(rawValue: value) ?? .paragraph : .paragraph
                 DispatchQueue.main.asyncAfter(deadline: .now() + 3) {

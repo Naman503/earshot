@@ -64,6 +64,21 @@ public enum OCRLayout {
     }
 
     /// The block under `point`, or the nearest one.
+    /// The blocks in the same column as block `i`, in order — so a sidebar or
+    /// side panel beside the text isn't read between its paragraphs. The
+    /// column is the tapped block widened by the blocks that overlap it and
+    /// start near its left edge (a short line widens to the full text width).
+    public static func column(of i: Int, in blocks: [Block]) -> [Int] {
+        let tapped = blocks[i].rect
+        func overlaps(_ r: CGRect, _ lo: CGFloat, _ hi: CGFloat) -> Bool { min(r.maxX, hi) - max(r.minX, lo) > 10 }
+        var lo = tapped.minX, hi = tapped.maxX
+        for b in blocks where overlaps(b.rect, tapped.minX, tapped.maxX) && b.rect.minX >= tapped.minX - 60 {
+            lo = min(lo, b.rect.minX)
+            hi = max(hi, b.rect.maxX)
+        }
+        return blocks.indices.filter { overlaps(blocks[$0].rect, lo, hi) && blocks[$0].rect.minX >= lo - 60 }
+    }
+
     public static func blockIndex(at point: CGPoint, in blocks: [Block]) -> Int? {
         if let i = blocks.firstIndex(where: { $0.rect.insetBy(dx: -6, dy: -6).contains(point) }) { return i }
         return blocks.indices.min { distance(point, blocks[$0].rect) < distance(point, blocks[$1].rect) }

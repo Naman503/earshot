@@ -12,9 +12,13 @@ mkdir -p "$DEST"
 cp "$SRC/server.py" "$SRC/pyproject.toml" "$SRC/uv.lock" "$DEST/"
 cd "$DEST"
 uv sync --frozen
+# The model is kept next to the engine (not ~/.cache, which cleaners empty).
+export HF_HOME="$DEST/hf"
 # Fetch the model, voices and the English text pipeline now, while online.
 uv run python - <<'PY'
+from huggingface_hub import snapshot_download
 from mlx_audio.tts.utils import load_model
+snapshot_download("prince-canuma/Kokoro-82M")  # every voice, Hindi included
 m = load_model("prince-canuma/Kokoro-82M")
 for voice in ("af_heart", "bf_emma"):
     for _ in m.generate("Installed.", voice=voice, lang_code=voice[0]):

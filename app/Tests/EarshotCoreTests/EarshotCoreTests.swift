@@ -136,6 +136,21 @@ final class OCRLayoutTests: XCTestCase {
         XCTAssertEqual(OCRLayout.blockIndex(at: CGPoint(x: 50, y: 85), in: blocks), 1)
     }
 
+    func testColumnSkipsSidebar() {
+        // A sidebar (x 20–200) beside the chat (x 300–900), interleaved by height.
+        let lines = [
+            OCRLayout.Line(text: "codex", rect: CGRect(x: 20, y: 100, width: 80, height: 14)),
+            OCRLayout.Line(text: "First paragraph of the reply.", rect: CGRect(x: 300, y: 110, width: 600, height: 14)),
+            OCRLayout.Line(text: "eb-elsa", rect: CGRect(x: 20, y: 160, width: 90, height: 14)),
+            OCRLayout.Line(text: "Short line.", rect: CGRect(x: 300, y: 170, width: 120, height: 14)),
+            OCRLayout.Line(text: "Indented bullet text", rect: CGRect(x: 322, y: 230, width: 400, height: 14)),
+        ]
+        let blocks = OCRLayout.blocks(lines)
+        let tapped = blocks.firstIndex { $0.text == "Short line." }!
+        let column = OCRLayout.column(of: tapped, in: blocks).map { blocks[$0].text }
+        XCTAssertEqual(column, ["First paragraph of the reply.", "Short line.", "Indented bullet text"])
+    }
+
     func testSpeedSplit() {
         XCTAssertEqual(speedSplit(1.0).model, 1.0)
         let s = speedSplit(2.0)

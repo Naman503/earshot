@@ -97,7 +97,19 @@ final class KokoroEngine: ObservableObject {
         p.arguments = [script.path]
         p.currentDirectoryURL = dir
         var env = ProcessInfo.processInfo.environment
-        env["HF_HUB_OFFLINE"] = "1"  // the installer downloaded the model; skip network checks
+        // The voice model lives with the engine, not in ~/.cache: cache
+        // cleaners emptied that, and every restart then failed with no voice.
+        // Offline once it's there (no network checks); online until then, so a
+        // missing model is fetched instead of failing.
+        let hf = dir.appendingPathComponent("hf")
+        env["HF_HOME"] = hf.path
+        let model = hf.appendingPathComponent("hub/models--prince-canuma--Kokoro-82M/snapshots")
+        if let snaps = try? FileManager.default.contentsOfDirectory(atPath: model.path), !snaps.isEmpty {
+            env["HF_HUB_OFFLINE"] = "1"
+        } else {
+            env.removeValue(forKey: "HF_HUB_OFFLINE")
+            Log.write("engine: voice model missing — downloading it (about 350 MB, once)")
+        }
         env["TOKENIZERS_PARALLELISM"] = "false"
         p.environment = env
         let inPipe = Pipe(), outPipe = Pipe(), errPipe = Pipe()
